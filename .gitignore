@@ -1,0 +1,50 @@
+# Security / Secrets
+secrets.json
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.venv
+.pytest_cache/
+
+# Node.js / Frontend
+node_modules/
+npm-debug.log
+yarn-error.log
+pnpm-debug.log
+.next/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/dist/
+
+# Excel / Data Backups
+~$*.xlsx
+영단어_backup.xlsx
+*.tmp
+
+# OS Generated
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# Logs
+*.log
+logs/
+
+# IDE / Editor
+.vscode/
+.idea/
