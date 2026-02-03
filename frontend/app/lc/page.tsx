@@ -49,6 +49,56 @@ export default function LCPage() {
     const [playingSegment, setPlayingSegment] = useState<{ start: number, end: number } | null>(null) // Track currently playing segment
     const [isAudioLoading, setIsAudioLoading] = useState(false) // Loading state for playback
 
+    // Resizable Sidebar State
+    const [sidebarWidth, setSidebarWidth] = useState(300)
+    const [isResizing, setIsResizing] = useState(false)
+    const sidebarRef = useRef<HTMLDivElement>(null)
+
+    // Handle resizing
+    useEffect(() => {
+        const handleMouseMove = (e: MouseEvent) => {
+            if (!isResizing) return
+            // Calculate new width based on mouse position
+            // We assume sidebar is on the left
+            const newWidth = e.clientX - 280 // Offset for main nav ~250px (approximation, fine-tuning needed or use ref)
+            // Actually, easier to use sidebarRef.current
+            // If sidebar is inside a flex container, e.clientX relative to viewport works if container starts at known pos.
+            // But let's just use delta.
+        }
+
+        // Better approach:
+        const resize = (e: MouseEvent) => {
+            if (isResizing && sidebarRef.current) {
+                // Calculate width relative to the sidebar's starting position
+                // Since layout is: Nav(256px or 80px) + Padding + Sidebar...
+                // It's safer to rely on movementX or just clamp values.
+                // Let's rely on simple clientX adjustment.
+
+                // Sidebar offset left?
+                const sidebarLeft = sidebarRef.current.getBoundingClientRect().left
+                let newWidth = e.clientX - sidebarLeft
+
+                // Constraints
+                if (newWidth < 200) newWidth = 200
+                if (newWidth > 600) newWidth = 600
+
+                setSidebarWidth(newWidth)
+            }
+        }
+
+        const stopResizing = () => setIsResizing(false)
+
+        if (isResizing) {
+            window.addEventListener('mousemove', resize)
+            window.addEventListener('mouseup', stopResizing)
+        }
+
+        return () => {
+            window.removeEventListener('mousemove', resize)
+            window.removeEventListener('mouseup', stopResizing)
+        }
+    }, [isResizing])
+
 
     // Load Dark Mode from localStorage (Synced with Word page)
     useEffect(() => {
@@ -261,9 +311,6 @@ export default function LCPage() {
                             </span>
                         )}
                     </h1>
-                    <p className="text-slate-500 dark:text-slate-400 mt-2 text-lg">
-                        AI Whisper로 파싱된 대본으로 듣기 실력을 향상시키세요.
-                    </p>
                 </div>
 
                 <div className="flex items-center gap-3">
@@ -277,14 +324,19 @@ export default function LCPage() {
                 </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
+            <div className="flex gap-0 h-[80vh]"> {/* Use Flex and fixed height for better resizing experience */}
                 {/* Sidebar: Audio List */}
-                <div className="lg:col-span-1 space-y-4">
+                <div
+                    ref={sidebarRef}
+                    className="flex-shrink-0 space-y-3 pr-4"
+                    style={{ width: sidebarWidth }}
+                >
+
                     <h2 className="text-xl font-bold text-slate-800 dark:text-slate-200 px-2 flex items-center gap-2">
                         <FileAudio className="w-5 h-5 text-purple-500" />
                         파일 목록
                     </h2>
-                    <div className="space-y-3 overflow-y-auto max-h-[70vh] pr-2 custom-scrollbar">
+                    <div className="space-y-3 overflow-y-auto h-full pb-20 custom-scrollbar"> {/* Full height scrolling */}
                         {files.length === 0 && !uploading && (
                             <div className="text-center py-10 text-slate-400 bg-white/50 dark:bg-slate-900/50 rounded-3xl border border-dashed border-slate-200 dark:border-slate-800">
                                 음원을 업로드하세요.
@@ -329,8 +381,18 @@ export default function LCPage() {
                     </div>
                 </div>
 
+                {/* Resizer Handle */}
+                <div
+                    className="w-4 flex items-center justify-center cursor-col-resize hover:bg-indigo-500/10 active:bg-indigo-500/30 transition-colors rounded-full mx-1 group"
+                    onMouseDown={() => setIsResizing(true)}
+                >
+                    <div className="w-1 h-12 bg-slate-300 dark:bg-slate-700 rounded-full group-hover:bg-indigo-400 transition-colors" />
+                </div>
+
                 {/* Main: Transcript Viewer ... */}
-                <div className="lg:col-span-3">
+                <div className="flex-1 min-w-0"> {/* Fill remaining space */}
+
+
                     {selectedFile ? (
                         <Card className="bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl border-slate-200 dark:border-slate-800 shadow-2xl rounded-[2.5rem] overflow-hidden">
                             <CardHeader className="border-b border-slate-100 dark:border-slate-800 p-8 flex flex-col gap-6">
@@ -502,41 +564,64 @@ export default function LCPage() {
                                                                         </div>
                                                                     )
                                                                 })}
-
                                                             </div>
                                                         </div>
                                                     ) : (
                                                         // Single Question (Part 1, 2 style)
-                                                        <div key={group.questions[0].id} id={`question-${group.questions[0].id}`} className="group animate-in slide-in-from-bottom-4 duration-500 scroll-mt-32">
-                                                            <div className="flex items-start gap-6">
-                                                                <Button
-                                                                    variant="ghost"
-                                                                    className={`w-14 h-14 rounded-2xl flex flex-col items-center justify-center gap-1 transition-all ${activeQuestionId === group.questions[0].id
-                                                                        ? "bg-indigo-600 text-white shadow-lg shadow-indigo-500/40 translate-x-1"
-                                                                        : "bg-slate-100 dark:bg-slate-800 text-slate-500 hover:bg-indigo-50 hover:text-indigo-600 dark:hover:bg-indigo-900/30"
-                                                                        }`}
-                                                                    onClick={() => playSegment(group.questions[0].start_time, group.questions[0].end_time, group.questions[0].id)}
-                                                                >
-                                                                    <span className="text-[10px] font-bold opacity-70">Q.</span>
-                                                                    <span className="text-lg font-black">{group.questions[0].question_number}</span>
-                                                                </Button>
+                                                        (() => {
+                                                            const singleQ = group.questions[0];
+                                                            const questionTextTrs = singleQ.transcripts.filter(t => t.label === 'question');
+                                                            const conversationTrs = singleQ.transcripts.filter(t => t.label !== 'question'); // 'conversation' or null
 
-                                                                <div className="flex-1 space-y-3">
-                                                                    {group.questions[0].transcripts.map((t, idx) => (
-                                                                        <p
-                                                                            key={idx}
-                                                                            className={`text-lg leading-relaxed cursor-pointer p-4 rounded-3xl transition-all border-2 border-transparent hover:border-indigo-100 dark:hover:border-indigo-900/30 hover:bg-white dark:hover:bg-slate-800/50 ${currentTime >= t.start_time && currentTime <= t.end_time
-                                                                                ? "text-indigo-600 dark:text-indigo-400 font-bold bg-indigo-50/50 dark:bg-indigo-900/10 border-indigo-200 dark:border-indigo-900/40 shadow-sm"
-                                                                                : "text-slate-600 dark:text-slate-300"
-                                                                                }`}
-                                                                            onClick={() => playSegment(t.start_time, t.end_time, group.questions[0].id)}
-                                                                        >
-                                                                            {t.text}
-                                                                        </p>
-                                                                    ))}
+                                                            return (
+                                                                <div key={singleQ.id} id={`question-${singleQ.id}`} className="group animate-in slide-in-from-bottom-4 duration-500 scroll-mt-32">
+                                                                    <div className="flex items-start gap-6">
+                                                                        <div className="flex flex-col gap-2">
+                                                                            <Button
+                                                                                variant="ghost"
+                                                                                className={`w-14 h-14 rounded-2xl flex flex-col items-center justify-center gap-1 transition-all ${activeQuestionId === singleQ.id
+                                                                                    ? "bg-indigo-600 text-white shadow-lg shadow-indigo-500/40 translate-x-1"
+                                                                                    : "bg-slate-100 dark:bg-slate-800 text-slate-500 hover:bg-indigo-50 hover:text-indigo-600 dark:hover:bg-indigo-900/30"
+                                                                                    }`}
+                                                                                onClick={() => playSegment(singleQ.start_time, singleQ.end_time, singleQ.id)}
+                                                                            >
+                                                                                <span className="text-[10px] font-bold opacity-70">Q.</span>
+                                                                                <span className="text-lg font-black">{singleQ.question_number}</span>
+                                                                            </Button>
+                                                                        </div>
+
+                                                                        <div className="flex-1 space-y-4">
+                                                                            {/* Question Text / Header (e.g. "Look at the picture...") */}
+                                                                            {questionTextTrs.length > 0 && (
+                                                                                <div className="p-4 bg-indigo-50 dark:bg-indigo-900/20 rounded-2xl text-indigo-800 dark:text-indigo-300 font-medium text-lg leading-relaxed border border-indigo-100 dark:border-indigo-800/50">
+                                                                                    {questionTextTrs.map((t, idx) => (
+                                                                                        <span key={idx} className="block mb-1 last:mb-0 cursor-pointer hover:underline" onClick={() => playSegment(t.start_time, t.end_time, singleQ.id)}>
+                                                                                            {t.text}
+                                                                                        </span>
+                                                                                    ))}
+                                                                                </div>
+                                                                            )}
+
+                                                                            {/* Options / Conversation Script */}
+                                                                            <div className="space-y-3">
+                                                                                {conversationTrs.map((t, idx) => (
+                                                                                    <p
+                                                                                        key={idx}
+                                                                                        className={`text-lg leading-relaxed cursor-pointer p-4 rounded-3xl transition-all border-2 border-transparent hover:border-indigo-100 dark:hover:border-indigo-900/30 hover:bg-white dark:hover:bg-slate-800/50 ${currentTime >= t.start_time && currentTime <= t.end_time
+                                                                                            ? "text-indigo-600 dark:text-indigo-400 font-bold bg-indigo-50/50 dark:bg-indigo-900/10 border-indigo-200 dark:border-indigo-900/40 shadow-sm"
+                                                                                            : "text-slate-600 dark:text-slate-300"
+                                                                                            }`}
+                                                                                        onClick={() => playSegment(t.start_time, t.end_time, singleQ.id)}
+                                                                                    >
+                                                                                        {t.text}
+                                                                                    </p>
+                                                                                ))}
+                                                                            </div>
+                                                                        </div>
+                                                                    </div>
                                                                 </div>
-                                                            </div>
-                                                        </div>
+                                                            );
+                                                        })()
                                                     )}
                                                 </div>
                                             ));

@@ -74,11 +74,12 @@ export default function SidebarLayout({
             </aside>
 
             {/* Main Content Area */}
-            <main className={`flex-1 p-8 min-h-screen transition-all duration-300 ease-in-out ${isCollapsed ? "ml-20" : "ml-64"}`}>
-                <div className="max-w-5xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <main className={`flex-1 p-4 min-h-screen transition-all duration-300 ease-in-out ${isCollapsed ? "ml-20" : "ml-64"}`}>
+                <div className="w-full animate-in fade-in slide-in-from-bottom-4 duration-500">
                     {children}
                 </div>
             </main>
+
         </div>
     )
 }

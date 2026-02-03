@@ -62,14 +62,275 @@ def get_db():
 LC_UPLOAD_DIR = "uploads/lc"
 os.makedirs(LC_UPLOAD_DIR, exist_ok=True)
 
-# Whisper Model Initialization (Base model for speed/accuracy balance)
-print("Loading Whisper Model...")
-whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
-print("Whisper Model Loaded.")
+# Whisper Model Initialization (High accuracy model)
+# print("Loading Whisper Model (large-v3 on GPU)...")
+# try:
+#     whisper_model = WhisperModel("large-v3", device="cuda", compute_type="int8_float16")
+#     print("Whisper Model Loaded on GPU.")
+
+# except Exception as e:
+#     print(f"Failed to load on GPU, falling back to CPU (medium model): {e}")
+#     whisper_model = WhisperModel("medium", device="cpu", compute_type="int8")
+
+import torch
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+# ================================
+# WHISPER MODEL CONFIGURATION
+# Options: "large-v3" (높은 정확도, 느림) 
+#          "distil-large-v3" (빠름, 약간 낮은 정확도)
+# ================================
+WHISPER_MODEL = "large-v3"  # 변경하려면 여기 수정
+
+whisper_model = WhisperModel(WHISPER_MODEL, device=device, compute_type="int8_float16")
+print(f"Whisper Model Loaded on {device} ({WHISPER_MODEL}).")
 
 @app.get("/")
 def read_root():
     return {"message": "TOEIC Whisper Backend is running!"}
+
+# ... (omitted parts)
+
+
+# --------------------------------------------------------------------------------
+# Hybrid Segmentation Logic (Text + Silence) - Global Definition
+# --------------------------------------------------------------------------------
+try:
+    import static_ffmpeg
+    static_ffmpeg.add_paths()
+    print("DEBUG: static_ffmpeg paths added.")
+except ImportError:
+     print("WARNING: static_ffmpeg not installed. Ensure ffmpeg is in PATH.")
+except Exception as e:
+    print(f"WARNING: static_ffmpeg initialization failed: {e}")
+
+from pydub import AudioSegment
+
+class HybridSegmenter:
+    """
+    4단계 파이프라인 세그멘터
+    [1단계] 구조 앵커 (Part/Number/Questions) - 외부에서 처리
+    [2단계] Silence Snap - 비대칭 탐색 (-1.0s ~ +0.3s)
+    [3단계] 컷 보정 (start -0.2s, end +0.15s)
+    [4단계] 안정성 체크 (min segment length)
+    """
+    
+    def __init__(self, audio_path):
+        self.audio = AudioSegment.from_file(audio_path)
+        self.audio_length_ms = len(self.audio)
+        self.avg_db = self.audio.dBFS
+        # 적응형 무음 임계값: 평균 볼륨보다 16~20dB 낮으면 무음
+        self.silence_threshold = self.avg_db - 18
+        print(f"DEBUG: Audio Loaded. Length: {self.audio_length_ms/1000:.1f}s, Avg: {self.avg_db:.1f}dB, Silence Threshold: {self.silence_threshold:.1f}dB")
+
+    def refine_timestamp(self, anchor_start, anchor_end, 
+                         start_window_before=1.0, start_window_after=0.3,
+                         end_window_before=0.3, end_window_after=0.3,
+                         min_silence_ms=300):
+        """
+        [2단계] Silence Snap + [3단계] 컷 보정
+        
+        Args:
+            anchor_start, anchor_end: Whisper가 제공한 원본 타임스탬프
+            start_window_before: 시작점 앞쪽 탐색 범위 (기본 1.0초)
+            start_window_after: 시작점 뒤쪽 탐색 범위 (기본 0.3초)
+            end_window_before: 끝점 앞쪽 탐색 범위 (기본 0.3초)
+            end_window_after: 끝점 뒤쪽 탐색 범위 (기본 0.3초)
+            min_silence_ms: 최소 무음 길이 (기본 300ms)
+        """
+        anchor_start_ms = int(anchor_start * 1000)
+        anchor_end_ms = int(anchor_end * 1000)
+        
+        # === [2단계] Silence Snap ===
+        # 비대칭 탐색: 시작점은 앞쪽으로 더 많이, 끝점은 균형있게
+        start_search_begin = max(0, anchor_start_ms - int(start_window_before * 1000))
+        start_search_end = min(self.audio_length_ms, anchor_start_ms + int(start_window_after * 1000))
+        
+        end_search_begin = max(0, anchor_end_ms - int(end_window_before * 1000))
+        end_search_end = min(self.audio_length_ms, anchor_end_ms + int(end_window_after * 1000))
+        
+        # 시작점: 무음이 끝나는 지점 찾기
+        snapped_start = self._find_silence_end(start_search_begin, start_search_end, 
+                                                anchor_start_ms, min_silence_ms)
+        # 끝점: 무음이 시작하는 지점 찾기  
+        snapped_end = self._find_silence_start(end_search_begin, end_search_end,
+                                                anchor_end_ms, min_silence_ms)
+        
+        # Fallback: SNAP 실패 시 anchor 그대로 사용
+        final_start_ms = snapped_start if snapped_start is not None else anchor_start_ms
+        final_end_ms = snapped_end if snapped_end is not None else anchor_end_ms
+        
+        # === [3단계] 컷 보정 ===
+        final_start_ms = max(0, final_start_ms - 200)  # -0.2초 버퍼
+        final_end_ms = min(self.audio_length_ms, final_end_ms + 150)  # +0.15초 버퍼
+        
+        # 변환: ms -> seconds
+        final_start = final_start_ms / 1000.0
+        final_end = final_end_ms / 1000.0
+        
+        # 디버그 로그
+        snap_status = []
+        if snapped_start is not None:
+            snap_status.append(f"S:{anchor_start:.2f}->{final_start:.2f}")
+        if snapped_end is not None:
+            snap_status.append(f"E:{anchor_end:.2f}->{final_end:.2f}")
+        
+        if snap_status:
+            print(f"DEBUG: SNAP! {' | '.join(snap_status)}")
+        
+        return final_start, final_end
+
+    def _find_silence_end(self, search_start_ms, search_end_ms, target_ms, min_silence_ms, chunk_size=30):
+        """무음 구간이 끝나는 지점 (= 음성 시작 직전) 찾기"""
+        segment = self.audio[search_start_ms:search_end_ms]
+        if len(segment) == 0:
+            return None
+            
+        silence_regions = []  # [(start_ms, end_ms), ...]
+        in_silence = False
+        silence_start = 0
+        
+        for i in range(0, len(segment), chunk_size):
+            chunk = segment[i:i+chunk_size]
+            is_silent = chunk.dBFS < self.silence_threshold
+            
+            if is_silent and not in_silence:
+                # 무음 시작
+                in_silence = True
+                silence_start = i
+            elif not is_silent and in_silence:
+                # 무음 끝
+                in_silence = False
+                silence_length = i - silence_start
+                if silence_length >= min_silence_ms:
+                    # 무음의 끝점 (= 음성 시작) 저장
+                    silence_regions.append(search_start_ms + i)
+        
+        if not silence_regions:
+            return None
+        
+        # target에 가장 가까운 무음 끝점 반환
+        return min(silence_regions, key=lambda x: abs(x - target_ms))
+
+    def _find_silence_start(self, search_start_ms, search_end_ms, target_ms, min_silence_ms, chunk_size=30):
+        """무음 구간이 시작하는 지점 (= 음성 끝 직후) 찾기"""
+        segment = self.audio[search_start_ms:search_end_ms]
+        if len(segment) == 0:
+            return None
+            
+        silence_regions = []
+        in_silence = False
+        silence_start = 0
+        
+        for i in range(0, len(segment), chunk_size):
+            chunk = segment[i:i+chunk_size]
+            is_silent = chunk.dBFS < self.silence_threshold
+            
+            if is_silent and not in_silence:
+                # 무음 시작
+                in_silence = True
+                silence_start = i
+            elif not is_silent and in_silence:
+                # 무음 끝
+                in_silence = False
+                silence_length = i - silence_start
+                if silence_length >= min_silence_ms:
+                    # 무음의 시작점 저장
+                    silence_regions.append(search_start_ms + silence_start)
+        
+        # 끝까지 무음이면 마지막 구간도 추가
+        if in_silence:
+            silence_length = len(segment) - silence_start
+            if silence_length >= min_silence_ms:
+                silence_regions.append(search_start_ms + silence_start)
+        
+        if not silence_regions:
+            return None
+        
+        # target에 가장 가까운 무음 시작점 반환
+        return min(silence_regions, key=lambda x: abs(x - target_ms))
+    
+    def check_segment_validity(self, start, end, min_duration=0.5):
+        """[4단계] 안정성 체크: 세그먼트가 너무 짧으면 False"""
+        duration = end - start
+        if duration < min_duration:
+            print(f"DEBUG: Segment too short ({duration:.2f}s < {min_duration}s), needs merge")
+            return False
+        return True
+
+# ===================================================
+# 세그먼트 후처리 함수들 (Split / Merge)
+# ===================================================
+
+def split_segment_by_question(text, start, end):
+    """
+    "Number X. [질문]? [대화]" 패턴을 분리
+    Returns: List of (text, start, end) tuples
+    """
+    import re
+    
+    # 패턴: "Number X. [질문내용]?" 이후에 추가 텍스트가 있으면 분리
+    pattern = r'((?:Number|Question)\s*\d+\.?\s*[^?]+\?)\s*(.+)'
+    match = re.match(pattern, text, re.IGNORECASE | re.DOTALL)
+    
+    if match:
+        question_part = match.group(1).strip()
+        dialogue_part = match.group(2).strip()
+        
+        if dialogue_part:  # 대화 부분이 있으면 분리
+            total_len = len(question_part) + len(dialogue_part)
+            question_ratio = len(question_part) / total_len
+            
+            # 타임스탬프 비례 배분
+            duration = end - start
+            split_point = start + (duration * question_ratio)
+            
+            print(f"DEBUG: SPLIT! '{question_part[:30]}...' | '{dialogue_part[:30]}...'")
+            return [
+                (question_part, start, split_point),
+                (dialogue_part, split_point, end)
+            ]
+    
+    # 분리 불필요
+    return [(text, start, end)]
+
+
+def should_merge_with_next(text):
+    """
+    A/B/C/D 단독 패턴인지 확인
+    """
+    import re
+    # "A." "B." "C." "D." 단독 or 매우 짧은 경우
+    return bool(re.match(r'^[A-D]\.\s*$', text.strip()))
+
+
+def merge_segments(segments):
+    """
+    A/B/C/D 패턴을 다음 세그먼트와 병합
+    Input: List of (text, start, end) tuples
+    Output: List of merged (text, start, end) tuples
+    """
+    if not segments:
+        return segments
+    
+    merged = []
+    i = 0
+    
+    while i < len(segments):
+        text, start, end = segments[i]
+        
+        # A/B/C/D 단독이고 다음 세그먼트가 있으면 병합
+        if should_merge_with_next(text) and i + 1 < len(segments):
+            next_text, _, next_end = segments[i + 1]
+            merged_text = f"{text.strip()} {next_text.strip()}"
+            merged.append((merged_text, start, next_end))
+            print(f"DEBUG: MERGE! '{text.strip()}' + '{next_text[:20]}...' -> '{merged_text[:30]}...'")
+            i += 2  # Skip next segment
+        else:
+            merged.append((text, start, end))
+            i += 1
+    
+    return merged
 
 from fastapi import Depends
 
@@ -286,7 +547,6 @@ def add_word(req: AddWordRequest):
         cur = conn.cursor(cursor_factory=RealDictCursor)
         
         # 1. Duplicate Check
-        # 1. Duplicate Check
         cur.execute("SELECT id, meaning FROM toeic_word WHERE word = %s", (req.word,))
         existing_word = cur.fetchone()
         if existing_word:
@@ -367,28 +627,90 @@ def process_lc_transcription(audio_id: int, file_path: str):
             print(f"ERROR: Audio file {audio_id} not found in DB execution thread.")
             return
 
-        # 1. Run Whisper
-        print("DEBUG: Calling whisper_model.transcribe...")
-        segments, info = whisper_model.transcribe(file_path, beam_size=5)
+        # 1. Run Whisper with word_timestamps for accurate timing
+        print("DEBUG: Calling whisper_model.transcribe with word_timestamps...")
+        segments_generator, info = whisper_model.transcribe(
+            file_path, 
+            beam_size=5,
+            vad_filter=True,
+            vad_parameters={"min_silence_duration_ms": 300},
+            word_timestamps=True  # 단어별 타임스탬프 활성화
+        )
         total_duration = info.duration
         print(f"DEBUG: Transcription started. Total Duration: {total_duration}s")
         
-        current_question = None
-        current_part = 0  # Default Part
-        last_progress_update = 0 
-        
-        # Buffer for dialogue/instruction text that appears BEFORE the question "Number X"
-        pending_context = [] 
-        # Tracks if we are "inside" a question set block (e.g., questions 4-6)
-        # Format: {"start": 4, "end": 6, "context_transcripts": []}
-        active_set_info = None
+        # [1단계] HybridSegmenter 초기화 (4단계 파이프라인)
+        segmenter = None
+        try:
+            segmenter = HybridSegmenter(file_path)
+            print("DEBUG: HybridSegmenter (4-step pipeline) initialized successfully.")
+        except Exception as e:
+            print(f"WARNING: Failed to load HybridSegmenter ({e}). Using raw timestamps.")
 
-        processed_segments = 0
-        for segment in segments:
-            processed_segments += 1
+        # ===================================================
+        # [새로운 방식] 세그먼트 수집 → Split → Merge → 처리
+        # ===================================================
+        print("DEBUG: Collecting segments from Whisper...")
+        raw_segments = []
+        
+        for segment in segments_generator:
             text = segment.text.strip()
-            start = segment.start
-            end = segment.end
+            if not text:
+                continue
+                
+            # word_timestamps로 anchor 추출
+            if hasattr(segment, 'words') and segment.words:
+                anchor_start = float(segment.words[0].start)
+                anchor_end = float(segment.words[-1].end)
+            else:
+                anchor_start = float(segment.start)
+                anchor_end = float(segment.end)
+            
+            raw_segments.append((text, anchor_start, anchor_end))
+        
+        print(f"DEBUG: Collected {len(raw_segments)} raw segments")
+        
+        # [Split 단계] "Number X. 질문? 대화" 분리
+        split_segments = []
+        for text, start, end in raw_segments:
+            split_result = split_segment_by_question(text, start, end)
+            split_segments.extend(split_result)
+        
+        print(f"DEBUG: After split: {len(split_segments)} segments")
+        
+        # [Merge 단계] A/B/C/D 병합
+        merged_segments = merge_segments(split_segments)
+        print(f"DEBUG: After merge: {len(merged_segments)} segments")
+        
+        # 최종 처리용 변수들
+        current_question = None
+        current_part = 0
+        last_progress_update = 0
+        pending_context = []
+        active_set_info = None
+        processed_segments = 0
+        
+        print("DEBUG: Starting final processing loop...")
+        for text, anchor_start, anchor_end in merged_segments:
+            processed_segments += 1
+            
+            # [2-3단계] Silence Snap + 컷 보정
+            if segmenter:
+                try:
+                    start, end = segmenter.refine_timestamp(anchor_start, anchor_end)
+                    
+                    # [4단계] 안정성 체크
+                    if not segmenter.check_segment_validity(start, end):
+                        start = max(0, anchor_start - 0.2)
+                        end = anchor_end + 0.15
+                except Exception as seg_err:
+                    print(f"Warning: Segmentation error for '{text[:30]}...': {seg_err}")
+                    start = max(0, anchor_start - 0.2)
+                    end = anchor_end + 0.15
+            else:
+                start = max(0, anchor_start - 0.2)
+                end = anchor_end + 0.15
+            # -------------------------
             
             # Progress Update
             if total_duration > 0:
@@ -439,6 +761,24 @@ def process_lc_transcription(audio_id: int, file_path: str):
                 
                 # Also save to active set context for later questions
                 active_set_info["context_transcripts"].append(transcript_obj)
+
+                # retroactively update set_number for questions that might have been created before this header
+                # (e.g., if "Number 7" appeared before "Questions 7 through 9")
+                try:
+                    existing_questions_in_range = db.query(models.ToeicQuestion).filter(
+                        models.ToeicQuestion.audio_id == audio_id,
+                        models.ToeicQuestion.question_number >= start_q,
+                        models.ToeicQuestion.question_number <= end_q
+                    ).all()
+                    
+                    for eq in existing_questions_in_range:
+                        if eq.set_number is None:
+                             eq.set_number = start_q
+                             print(f"Retroactively updated Q{eq.question_number} to Set {start_q}")
+                    db.flush()
+                except Exception as e:
+                    print(f"Error retroactively updating set numbers: {e}")
+
                 
             elif q_match:
                 q_val = int(q_match.group(2))
@@ -532,9 +872,15 @@ def process_lc_transcription(audio_id: int, file_path: str):
                         # So text appearing AFTER "Number X" is Question Content.
                     )
                     # Let's enforce: If it's attached to a specific question (and it's not the initial conversation context), it's likely the question text itself.
-                    # EXCEPT if it's the conversation continuing? No, conversation happens BEFORE questions in Part 3/4.
-                    # So anything added to `current_question` via `else` is Question Reading.
-                    db_transcript.label = "question" 
+                    
+                    # Logic: 
+                    # Part 1 & 2: Text following "Number X" is the script/options -> label="conversation"
+                    # Part 3 & 4: Text following "Number X" is the question text itself -> label="question"
+                    if current_part in [1, 2]:
+                        db_transcript.label = "conversation"
+                    else:
+                        db_transcript.label = "question"
+                    
                     db.add(db_transcript)
                 else:
                     # Context appearing before a question

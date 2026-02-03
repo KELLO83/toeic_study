@@ -48,3 +48,7 @@ logs/
 # IDE / Editor
 .vscode/
 .idea/
+
+/uploads/lc
+
+*.exe
