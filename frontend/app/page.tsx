@@ -446,6 +446,13 @@ export default function Home() {
           >
             + Add Word
           </Button>
+          <Button
+            onClick={() => window.open("http://localhost:8000/words/export", "_blank")}
+            className="h-11 px-4 bg-green-600 hover:bg-green-700 text-white font-medium shadow-sm hover:shadow-md transition-all"
+            title="Export to Excel"
+          >
+            📥 Excel
+          </Button>
         </div>
 
         {/* Content Section: Custom List */}

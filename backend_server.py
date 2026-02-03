@@ -12,7 +12,12 @@ import re
 from openai import OpenAI
 import requests
 import json
-from faster_whisper import WhisperModel
+try:
+    from faster_whisper import WhisperModel
+    FASTER_WHISPER_AVAILABLE = True
+except ImportError:
+    WhisperModel = None
+    FASTER_WHISPER_AVAILABLE = False
 from sqlalchemy.orm import Session
 from sqlalchemy import text # Import text
 from database import SessionLocal, engine, get_db
@@ -81,9 +86,19 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 #          "distil-large-v3" (빠름, 약간 낮은 정확도)
 # ================================
 WHISPER_MODEL = "large-v3"  # 변경하려면 여기 수정
+WHISPERX_SERVICE_URL = os.getenv("WHISPERX_SERVICE_URL", "").strip()
+WHISPER_FW_SERVICE_URL = os.getenv("WHISPER_FW_SERVICE_URL", "").strip()
+whisper_model = None
 
-whisper_model = WhisperModel(WHISPER_MODEL, device=device, compute_type="int8_float16")
-print(f"Whisper Model Loaded on {device} ({WHISPER_MODEL}).")
+def get_whisper_model():
+    global whisper_model
+    if not FASTER_WHISPER_AVAILABLE:
+        raise RuntimeError("faster-whisper is not installed. Set WHISPER_FW_SERVICE_URL or install faster-whisper.")
+    if whisper_model is None:
+        print(f"Loading Whisper Model ({WHISPER_MODEL}) on {device}... (최초 1회만 소요)")
+        whisper_model = WhisperModel(WHISPER_MODEL, device=device, compute_type="int8_float16")
+        print(f"✅ Whisper Model Loaded on {device} ({WHISPER_MODEL}).")
+    return whisper_model
 
 @app.get("/")
 def read_root():
@@ -175,8 +190,7 @@ class HybridSegmenter:
         if snapped_end is not None:
             snap_status.append(f"E:{anchor_end:.2f}->{final_end:.2f}")
         
-        if snap_status:
-            print(f"DEBUG: SNAP! {' | '.join(snap_status)}")
+        # SNAP debug log intentionally disabled (too noisy).
         
         return final_start, final_end
 
@@ -627,17 +641,47 @@ def process_lc_transcription(audio_id: int, file_path: str):
             print(f"ERROR: Audio file {audio_id} not found in DB execution thread.")
             return
 
-        # 1. Run Whisper with word_timestamps for accurate timing
-        print("DEBUG: Calling whisper_model.transcribe with word_timestamps...")
-        segments_generator, info = whisper_model.transcribe(
-            file_path, 
-            beam_size=5,
-            vad_filter=True,
-            vad_parameters={"min_silence_duration_ms": 300},
-            word_timestamps=True  # 단어별 타임스탬프 활성화
-        )
-        total_duration = info.duration
-        print(f"DEBUG: Transcription started. Total Duration: {total_duration}s")
+        # 1. Transcribe (FW service -> local fallback)
+        raw_segments = []
+        segments_generator = None
+        total_duration = 0.0
+
+        if WHISPER_FW_SERVICE_URL:
+            try:
+                fw_audio_path = file_path.replace("\\", "/")
+                if fw_audio_path.startswith("uploads/"):
+                    fw_audio_path = "/app/" + fw_audio_path
+                print(f"DEBUG: Calling faster-whisper service: {WHISPER_FW_SERVICE_URL}")
+                fw_res = requests.post(
+                    f"{WHISPER_FW_SERVICE_URL}/transcribe",
+                    json={"audio_path": fw_audio_path, "language": "en"},
+                    timeout=1800,
+                )
+                fw_res.raise_for_status()
+                fw_data = fw_res.json()
+                total_duration = float(fw_data.get("duration", 0.0))
+                for seg in fw_data.get("segments", []):
+                    text = (seg.get("text") or "").strip()
+                    if text:
+                        raw_segments.append((text, float(seg.get("start", 0)), float(seg.get("end", 0))))
+                print(f"DEBUG: FW service transcription completed. Segments: {len(raw_segments)}")
+            except Exception as fw_err:
+                print(f"WARNING: FW service failed: {fw_err}. Falling back to local faster-whisper.")
+
+        if not raw_segments:
+            print("DEBUG: Calling Whisper transcribe with optimized settings...")
+            model = get_whisper_model()
+            segments_generator, info = model.transcribe(
+                file_path,
+                beam_size=5,
+                vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": 300},
+                word_timestamps=True,
+                language="en",
+                condition_on_previous_text=False,
+            )
+            total_duration = info.duration
+            print(f"DEBUG: Transcription started. Total Duration: {total_duration}s")
         
         # [1단계] HybridSegmenter 초기화 (4단계 파이프라인)
         segmenter = None
@@ -651,24 +695,54 @@ def process_lc_transcription(audio_id: int, file_path: str):
         # [새로운 방식] 세그먼트 수집 → Split → Merge → 처리
         # ===================================================
         print("DEBUG: Collecting segments from Whisper...")
-        raw_segments = []
+        if segments_generator is not None:
+            for segment in segments_generator:
+                text = segment.text.strip()
+                if not text:
+                    continue
+                if hasattr(segment, 'words') and segment.words:
+                    anchor_start = float(segment.words[0].start)
+                    anchor_end = float(segment.words[-1].end)
+                else:
+                    anchor_start = float(segment.start)
+                    anchor_end = float(segment.end)
+                raw_segments.append((text, anchor_start, anchor_end))
         
-        for segment in segments_generator:
-            text = segment.text.strip()
-            if not text:
-                continue
-                
-            # word_timestamps로 anchor 추출
-            if hasattr(segment, 'words') and segment.words:
-                anchor_start = float(segment.words[0].start)
-                anchor_end = float(segment.words[-1].end)
-            else:
-                anchor_start = float(segment.start)
-                anchor_end = float(segment.end)
-            
-            raw_segments.append((text, anchor_start, anchor_end))
-        
-        print(f"DEBUG: Collected {len(raw_segments)} raw segments")
+        print(f"[STEP 1/5] Whisper 세그먼트 수집 완료: {len(raw_segments)}개")
+
+        if WHISPERX_SERVICE_URL and len(raw_segments) > 0:
+            print(f"[STEP 2/5] WhisperX service alignment 시도 중...")
+            try:
+                wx_audio_path = file_path.replace("\\", "/")
+                if wx_audio_path.startswith("uploads/"):
+                    wx_audio_path = "/app/" + wx_audio_path
+                wx_payload = {
+                    "audio_path": wx_audio_path,
+                    "segments": [{"text": t, "start": s, "end": e} for t, s, e in raw_segments],
+                }
+                wx_res = requests.post(f"{WHISPERX_SERVICE_URL}/align", json=wx_payload, timeout=1800)
+                wx_res.raise_for_status()
+                wx_data = wx_res.json()
+                aligned_segments = wx_data.get("segments", [])
+                if aligned_segments:
+                    raw_segments = []
+                    for seg in aligned_segments:
+                        text = (seg.get("text") or "").strip()
+                        if not text:
+                            continue
+                        words = seg.get("words", [])
+                        if words:
+                            start = words[0].get("start", seg.get("start", 0))
+                            end = words[-1].get("end", seg.get("end", 0))
+                        else:
+                            start = seg.get("start", 0)
+                            end = seg.get("end", 0)
+                        raw_segments.append((text, float(start), float(end)))
+                    print(f"✅ WhisperX service alignment 성공! {len(raw_segments)}개 세그먼트 정렬됨")
+                else:
+                    print("WARNING: WhisperX service returned empty segments. Using original timestamps.")
+            except Exception as wx_err:
+                print(f"WARNING: WhisperX service failed: {wx_err}. Using original timestamps.")
         
         # [Split 단계] "Number X. 질문? 대화" 분리
         split_segments = []

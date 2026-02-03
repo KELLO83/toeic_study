@@ -51,4 +51,18 @@ logs/
 
 /uploads/lc
 
+# Executables
 *.exe
+
+# MCP Config
+**/mcp_config.json
+.gemini/
+
+# Images
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.ico
+*.svg

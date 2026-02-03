@@ -49,6 +49,44 @@ export default function LCPage() {
     const [playingSegment, setPlayingSegment] = useState<{ start: number, end: number } | null>(null) // Track currently playing segment
     const [isAudioLoading, setIsAudioLoading] = useState(false) // Loading state for playback
 
+    // Web Audio API refs for precise duration-based playback
+    const audioContextRef = useRef<AudioContext | null>(null)
+    const audioBufferRef = useRef<AudioBuffer | null>(null)
+    const sourceNodeRef = useRef<AudioBufferSourceNode | null>(null)
+    const [audioBufferLoaded, setAudioBufferLoaded] = useState(false)
+    const isStoppingRef = useRef(false)  // Prevent race conditions in audio stop
+
+    // Dedicated function to stop ALL audio sources
+    const stopAllAudio = () => {
+        console.log("stopAllAudio called")
+        isStoppingRef.current = true
+
+        // Stop Web Audio source
+        if (sourceNodeRef.current) {
+            try {
+                sourceNodeRef.current.stop()
+                sourceNodeRef.current.disconnect()
+            } catch (e) {
+                // Already stopped
+            }
+            sourceNodeRef.current = null
+        }
+
+        // Stop HTMLAudioElement
+        if (audioRef.current) {
+            audioRef.current.pause()
+            audioRef.current.currentTime = 0
+            if (checkTimeRef.current) {
+                audioRef.current.removeEventListener("timeupdate", checkTimeRef.current)
+                checkTimeRef.current = null
+            }
+        }
+
+        setIsPlaying(false)
+        setPlayingSegment(null)
+        isStoppingRef.current = false
+    }
+
     // Resizable Sidebar State
     const [sidebarWidth, setSidebarWidth] = useState(300)
     const [isResizing, setIsResizing] = useState(false)
@@ -161,75 +199,133 @@ export default function LCPage() {
         finally { setLoading(false) }
     }
 
+    // Load audio buffer for Web Audio API when file is selected
+    const loadAudioBuffer = async (fileId: number) => {
+        try {
+            if (!audioContextRef.current) {
+                audioContextRef.current = new AudioContext()
+            }
+
+            const response = await fetch(`http://localhost:8000/lc/audio/${fileId}`)
+            const arrayBuffer = await response.arrayBuffer()
+            const audioBuffer = await audioContextRef.current.decodeAudioData(arrayBuffer)
+            audioBufferRef.current = audioBuffer
+            setAudioBufferLoaded(true)
+            console.log(`Audio buffer loaded: ${audioBuffer.duration}s`)
+        } catch (err) {
+            console.error("Failed to load audio buffer:", err)
+            setAudioBufferLoaded(false)
+        }
+    }
+
+    // Load buffer when file is selected
+    useEffect(() => {
+        if (selectedFile?.id) {
+            setAudioBufferLoaded(false)
+            loadAudioBuffer(selectedFile.id)
+        }
+    }, [selectedFile?.id])
+
+    // Always stop previous playback when switching audio file
+    useEffect(() => {
+        stopAllAudio()
+    }, [selectedFile?.id])
+
     const playSegment = async (start: number, end: number, questionId: number | null = null) => {
         console.log(`playSegment called: start=${start}, end=${end}, questionId=${questionId}`)
 
-        if (!audioRef.current) {
-            console.error("audioRef.current is null!")
-            return
-        }
-
-        const audio = audioRef.current
-
-        // Clean up previous playback
-        audio.pause()
-        if (checkTimeRef.current) {
-            audio.removeEventListener("timeupdate", checkTimeRef.current)
-            checkTimeRef.current = null
-            console.log("Previous listener cleaned up")
-        }
+        // ===== 1. Stop ALL currently playing sources =====
+        stopAllAudio()
 
         // Only set active question if a valid questionId is provided
         if (questionId !== null) {
             setActiveQuestionId(questionId)
         }
-        setIsAudioLoading(true) // Show loading state
+        setIsAudioLoading(true)
 
+        // Use Web Audio API for precise duration-based playback
+        if (audioBufferRef.current && audioContextRef.current) {
+            try {
+                // Resume context if suspended (browser autoplay policy)
+                if (audioContextRef.current.state === 'suspended') {
+                    await audioContextRef.current.resume()
+                }
 
-        // Create new checkTime function
+                const source = audioContextRef.current.createBufferSource()
+                source.buffer = audioBufferRef.current
+                source.connect(audioContextRef.current.destination)
+
+                // Calculate duration
+                const duration = end - start
+                const offset = Math.max(0, start)
+                const safeDuration = Math.min(duration, audioBufferRef.current.duration - offset)
+
+                console.log(`Web Audio: offset=${offset.toFixed(2)}s, duration=${safeDuration.toFixed(2)}s`)
+
+                // Store reference to stop later if needed
+                sourceNodeRef.current = source
+
+                // Start playback with precise duration
+                source.start(0, offset, safeDuration)
+
+                setIsPlaying(true)
+                setPlayingSegment({ start, end })
+                setIsAudioLoading(false)
+
+                // Handle playback end
+                source.onended = () => {
+                    setIsPlaying(false)
+                    sourceNodeRef.current = null
+                    console.log("Playback ended precisely at duration")
+                }
+
+            } catch (err) {
+                console.error("Web Audio playback failed:", err)
+                setIsAudioLoading(false)
+                setPlayingSegment(null)
+                // Fallback to HTMLAudioElement if needed
+                fallbackPlay(start, end, questionId)
+            }
+        } else {
+            // Fallback to HTMLAudioElement if buffer not loaded
+            console.log("Buffer not ready, using fallback")
+            fallbackPlay(start, end, questionId)
+        }
+    }
+
+    // Fallback to HTMLAudioElement (less precise)
+    const fallbackPlay = async (start: number, end: number, questionId: number | null) => {
+        if (!audioRef.current) return
+
+        const audio = audioRef.current
+        audio.pause()
+
+        if (checkTimeRef.current) {
+            audio.removeEventListener("timeupdate", checkTimeRef.current)
+            checkTimeRef.current = null
+        }
+
         const checkTime = () => {
             if (audioRef.current && audioRef.current.currentTime >= end) {
                 audioRef.current.removeEventListener("timeupdate", checkTime)
                 audioRef.current.pause()
                 setIsPlaying(false)
-                // Keep playingSegment to maintain highlight after playback ends
                 checkTimeRef.current = null
-                console.log("Playback stopped at end time")
             }
         }
-
-
         checkTimeRef.current = checkTime
 
-        const playAfterSeek = async () => {
-            try {
-                audio.currentTime = start
-                console.log(`Seeking to ${start}s, audio duration: ${audio.duration}s`)
-
-                await audio.play()
-                setIsPlaying(true)
-                setPlayingSegment({ start, end }) // Set currently playing segment
-                setIsAudioLoading(false) // Hide loading state
-                console.log("Playback started")
-
-                // Register end-time listener AFTER play succeeds
-                audio.addEventListener("timeupdate", checkTime)
-
-            } catch (err) {
-                console.error("Playback failed:", err)
-                setIsAudioLoading(false)
-                setPlayingSegment(null)
-            }
-        }
-
-
-        // If audio is ready, play immediately
-        if (audio.readyState >= 3) {
-            await playAfterSeek()
-        } else {
-            console.log("Waiting for audio to load...")
-            audio.addEventListener('canplaythrough', playAfterSeek, { once: true })
-            audio.load()
+        try {
+            audio.currentTime = start
+            await audio.play()
+            setIsPlaying(true)
+            setPlayingSegment({ start, end })
+            setIsAudioLoading(false)
+            audio.addEventListener("timeupdate", checkTime)
+        } catch (err) {
+            console.error("Fallback playback failed:", err)
+            setIsAudioLoading(false)
+            setPlayingSegment(null)
         }
     }
 
@@ -401,16 +497,6 @@ export default function LCPage() {
                                         <CardTitle className="text-2xl font-black text-slate-800 dark:text-slate-100">{selectedFile.filename}</CardTitle>
                                         <p className="text-slate-500 mt-1 uppercase tracking-wider text-xs font-bold">Transcription Details</p>
                                     </div>
-                                    {selectedFile && (
-                                        <audio
-                                            ref={audioRef}
-                                            src={`http://localhost:8000/lc/audio/${selectedFile.id}`}
-                                            onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
-                                            onPlay={() => setIsPlaying(true)}
-                                            onPause={() => setIsPlaying(false)}
-                                            className="hidden"
-                                        />
-                                    )}
                                 </div>
 
                                 {/* Part Filter Tabs */}

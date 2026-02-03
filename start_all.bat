@@ -5,18 +5,17 @@ echo   TOEIC Whisper - All-in-One Launcher
 echo ==========================================
 
 echo.
-echo [1/3] Starting Ollama Server...
-:: Start Ollama in a new minimized window. 
-:: If it's already running, this might just show an error usage message which is fine.
-start "Ollama" /min cmd /k "ollama serve"
-
-echo.
-echo [2/3] Starting Backend Server (Python/FastAPI)...
+echo [1/2] Starting Backend Server (Python/FastAPI)...
 cd /d "%~dp0"
-start "Backend Server" cmd /k "python backend_server.py"
+if exist ".venv\Scripts\python.exe" (
+    start "Backend Server" cmd /k "set WHISPERX_SERVICE_URL=http://localhost:8011 && set WHISPER_FW_SERVICE_URL=http://localhost:8010 && .venv\Scripts\python.exe backend_server.py"
+) else (
+    echo [WARN] .venv not found. Using system Python.
+    start "Backend Server" cmd /k "set WHISPERX_SERVICE_URL=http://localhost:8011 && set WHISPER_FW_SERVICE_URL=http://localhost:8010 && python backend_server.py"
+)
 
 echo.
-echo [3/3] Starting Frontend (Next.js)...
+echo [2/2] Starting Frontend (Next.js)...
 cd "frontend"
 start "Frontend Client" cmd /k "npm run dev"
 

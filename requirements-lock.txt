@@ -1,0 +1,24 @@
+# Python 3.11 only
+
+# Core backend
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+python-multipart==0.0.20
+pydub==0.25.1
+SQLAlchemy==2.0.43
+psycopg2-binary==2.9.10
+edge-tts==7.2.3
+pandas==2.3.2
+openpyxl==3.1.5
+python-dotenv==1.1.1
+static-ffmpeg==3.0
+
+# ASR stack pins (must stay aligned)
+numpy==1.26.4
+huggingface-hub==0.27.1
+transformers==4.46.3
+ctranslate2==4.4.0
+faster-whisper==1.1.1
+pyannote.audio==3.1.1
+matplotlib==3.9.2
+whisperx==3.1.1
