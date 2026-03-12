@@ -120,6 +120,7 @@ except Exception as e:
     print(f"WARNING: static_ffmpeg initialization failed: {e}")
 
 from pydub import AudioSegment
+from pydub.silence import detect_nonsilent
 
 class HybridSegmenter:
     """
@@ -137,6 +138,23 @@ class HybridSegmenter:
         # 적응형 무음 임계값: 평균 볼륨보다 16~20dB 낮으면 무음
         self.silence_threshold = self.avg_db - 18
         print(f"DEBUG: Audio Loaded. Length: {self.audio_length_ms/1000:.1f}s, Avg: {self.avg_db:.1f}dB, Silence Threshold: {self.silence_threshold:.1f}dB")
+
+        # VAD-like non-silence regions (ms) for boundary snapping
+        try:
+            self.vad_segments = detect_nonsilent(
+                self.audio,
+                min_silence_len=400,
+                silence_thresh=self.silence_threshold,
+                seek_step=10,
+            )
+            if self.vad_segments:
+                print(f"DEBUG: VAD segments detected: {len(self.vad_segments)}")
+            else:
+                self.vad_segments = []
+                print("DEBUG: VAD segments detected: 0")
+        except Exception as e:
+            self.vad_segments = []
+            print(f"WARNING: VAD detection failed: {e}")
 
     def refine_timestamp(self, anchor_start, anchor_end, 
                          start_window_before=1.0, start_window_after=0.3,
@@ -178,6 +196,21 @@ class HybridSegmenter:
         # === [3단계] 컷 보정 ===
         final_start_ms = max(0, final_start_ms - 200)  # -0.2초 버퍼
         final_end_ms = min(self.audio_length_ms, final_end_ms + 150)  # +0.15초 버퍼
+
+        # === [VAD] 경계 스냅 (가까운 무음 경계에만 적용) ===
+        vad_seg = self._find_vad_segment(anchor_start_ms, anchor_end_ms)
+        if vad_seg is not None:
+            vad_start_ms, vad_end_ms = vad_seg
+            vad_duration_s = (vad_end_ms - vad_start_ms) / 1000.0
+            if vad_duration_s <= 12.0:
+                vad_snap_ms = 400
+                if abs(final_start_ms - vad_start_ms) <= vad_snap_ms:
+                    final_start_ms = vad_start_ms
+                if abs(final_end_ms - vad_end_ms) <= vad_snap_ms:
+                    final_end_ms = vad_end_ms
+                # Do not cross VAD boundary
+                final_start_ms = max(final_start_ms, vad_start_ms)
+                final_end_ms = min(final_end_ms, vad_end_ms)
         
         # 변환: ms -> seconds
         final_start = final_start_ms / 1000.0
@@ -263,6 +296,19 @@ class HybridSegmenter:
         
         # target에 가장 가까운 무음 시작점 반환
         return min(silence_regions, key=lambda x: abs(x - target_ms))
+
+    def _find_vad_segment(self, anchor_start_ms, anchor_end_ms):
+        """anchor와 가장 많이 겹치는 VAD 구간 선택"""
+        if not self.vad_segments:
+            return None
+        best = None
+        best_overlap = 0
+        for seg_start, seg_end in self.vad_segments:
+            overlap = max(0, min(anchor_end_ms, seg_end) - max(anchor_start_ms, seg_start))
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best = (seg_start, seg_end)
+        return best
     
     def check_segment_validity(self, start, end, min_duration=0.5):
         """[4단계] 안정성 체크: 세그먼트가 너무 짧으면 False"""
@@ -349,9 +395,12 @@ def merge_segments(segments):
 from fastapi import Depends
 
 @app.get("/words")
-def get_words(limit: int = 100, db: Session = Depends(get_db)):
+def get_words(limit: int | None = None, db: Session = Depends(get_db)):
     try:
-        words = db.query(models.ToeicWord).limit(limit).all()
+        query = db.query(models.ToeicWord).order_by(models.ToeicWord.id.asc())
+        if limit is not None:
+            query = query.limit(limit)
+        words = query.all()
         return words
     except Exception as e:
         print(f"Error fetching words: {e}")
@@ -601,13 +650,78 @@ def add_word(req: AddWordRequest):
         new_id = cur.fetchone()['id']
         conn.commit()
         return {"status": "SUCCESS", "id": new_id, "message": "단어가 추가되었습니다!"}
-
+        
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if cur: cur.close()
         if conn: conn.close()
+
+import pandas as pd
+import io
+
+@app.post("/words/upload")
+async def upload_words_excel(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    if not (file.filename.endswith('.xlsx') or file.filename.endswith('.xls')):
+         raise HTTPException(status_code=400, detail="Only Excel files (.xlsx, .xls) are allowed.")
+         
+    try:
+        # Read the uploaded file into pandas
+        contents = await file.read()
+        df = pd.read_excel(io.BytesIO(contents))
+        
+        # We assume the columns are named '단어' and '의미' or we take first two columns
+        if '단어' in df.columns and '의미' in df.columns:
+            word_col = '단어'
+            meaning_col = '의미'
+        else:
+            if len(df.columns) < 2:
+                raise HTTPException(status_code=400, detail="Excel file must contain at least two columns.")
+            word_col = df.columns[0]
+            meaning_col = df.columns[1]
+
+        # Extract rows and normalize obvious spreadsheet noise
+        normalized_df = df[[word_col, meaning_col]].copy()
+        normalized_df[word_col] = normalized_df[word_col].astype(str).str.strip()
+        normalized_df[meaning_col] = normalized_df[meaning_col].astype(str).str.strip()
+        normalized_df = normalized_df[
+            normalized_df[word_col].ne("")
+            & normalized_df[meaning_col].ne("")
+            & normalized_df[word_col].ne("nan")
+            & normalized_df[meaning_col].ne("nan")
+        ]
+        words_data = normalized_df.to_dict('records')
+        
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error reading Excel file: {str(e)}")
+    
+    try:
+        # 1. Delete all existing words and reset identity
+        db.execute(text("TRUNCATE TABLE toeic_word RESTART IDENTITY CASCADE"))
+
+        # 2. Insert new words
+        inserted_words = []
+        for row in words_data:
+            word = str(row[word_col]).strip()
+            meaning = str(row[meaning_col]).strip()
+            
+            if word and meaning:
+                inserted_words.append(
+                    models.ToeicWord(word=word, meaning=meaning, sheet_name="Excel Upload")
+                )
+
+        db.add_all(inserted_words)
+        db.commit()
+        return {
+            "status": "SUCCESS",
+            "inserted_count": len(inserted_words),
+            "message": f"기존 단어가 삭제되고 새 단어 {len(inserted_words)}개가 추가되었습니다!",
+        }
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 # --- LC (Listening Comprehension) Endpoints ---
 
@@ -712,6 +826,9 @@ def process_lc_transcription(audio_id: int, file_path: str):
 
         if WHISPERX_SERVICE_URL and len(raw_segments) > 0:
             print(f"[STEP 2/5] WhisperX service alignment 시도 중...")
+            # [FIX #3] 원본 세그먼트를 인덱스 기반 리스트로 저장 (동일 텍스트 덮어쓰기 방지)
+            original_segments = [(seg[0].strip(), seg[1], seg[2]) for seg in raw_segments]
+            
             try:
                 wx_audio_path = file_path.replace("\\", "/")
                 if wx_audio_path.startswith("uploads/"):
@@ -724,25 +841,115 @@ def process_lc_transcription(audio_id: int, file_path: str):
                 wx_res.raise_for_status()
                 wx_data = wx_res.json()
                 aligned_segments = wx_data.get("segments", [])
+                
                 if aligned_segments:
-                    raw_segments = []
-                    for seg in aligned_segments:
+                    # ==========================================
+                    # 5단계 정제 파이프라인 (WhisperX 결과 검증)
+                    # ==========================================
+                    MIN_DURATION = 0.5
+                    refined_segments = []
+                    prev_end = 0.0
+                    prev_start = -999.0
+                    prev_end_check = -999.0
+                    fallback_count = 0
+                    
+                    for seg_idx, seg in enumerate(aligned_segments):
                         text = (seg.get("text") or "").strip()
                         if not text:
                             continue
-                        words = seg.get("words", [])
-                        if words:
-                            start = words[0].get("start", seg.get("start", 0))
-                            end = words[-1].get("end", seg.get("end", 0))
+                        
+                        # [FIX #3] 원본 타임스탬프 - 인덱스 기반으로 조회
+                        if seg_idx < len(original_segments):
+                            orig_text, orig_start, orig_end = original_segments[seg_idx]
                         else:
-                            start = seg.get("start", 0)
-                            end = seg.get("end", 0)
-                        raw_segments.append((text, float(start), float(end)))
-                    print(f"✅ WhisperX service alignment 성공! {len(raw_segments)}개 세그먼트 정렬됨")
+                            orig_start, orig_end = seg.get("start", 0), seg.get("end", 0)
+                        
+                        # ========================================
+                        # STEP 1: 유효 단어 필터링 (None, 역전 제거)
+                        # ========================================
+                        words = seg.get("words", [])
+                        valid_words = [
+                            w for w in words
+                            if w.get("start") is not None
+                            and w.get("end") is not None
+                            and w["end"] > w["start"]
+                        ]
+                        
+                        # ========================================
+                        # STEP 2: 세그먼트 start/end 계산
+                        # ========================================
+                        fallback = False
+                        fallback_reason = None
+                        
+                        if len(valid_words) >= 2:
+                            start = valid_words[0]["start"]
+                            end = valid_words[-1]["end"]
+                        elif len(valid_words) == 1:
+                            start, end = orig_start, orig_end
+                            fallback = True
+                            fallback_reason = "single_valid_word"
+                        else:
+                            start, end = orig_start, orig_end
+                            fallback = True
+                            fallback_reason = "no_valid_words"
+                        
+                        # ========================================
+                        # STEP 3: 절대 조건 검증
+                        # ========================================
+                        if end <= start:
+                            start, end = orig_start, orig_end
+                            fallback = True
+                            fallback_reason = "end_before_start"
+                        
+                        if (end - start) < MIN_DURATION:
+                            start, end = orig_start, orig_end
+                            fallback = True
+                            fallback_reason = "short_duration"
+                        
+                        # ========================================
+                        # STEP 4: Monotonic 강제 (non-overlap)
+                        # ========================================
+                        if start < prev_end:
+                            start = prev_end + 0.02
+                        if (end - start) < MIN_DURATION:
+                            end = start + MIN_DURATION
+                        
+                        # ========================================
+                        # STEP 5: 중복 저장 방지
+                        # ========================================
+                        if abs(start - prev_start) < 0.1 and abs(end - prev_end_check) < 0.1:
+                            start, end = orig_start, orig_end
+                            fallback = True
+                            fallback_reason = "duplicate_range"
+                            if start < prev_end:
+                                start = prev_end + 0.02
+                                end = max(end, start + MIN_DURATION)
+                        
+                        # [FIX #2] 동일 텍스트 연속 세그먼트 병합 (매우 엄격한 조건)
+                        # 이전과 같은 텍스트 AND 0.1초 이내 AND 짧은 duration이면 중복으로 스킵
+                        if refined_segments:
+                            prev_text, prev_s, prev_e = refined_segments[-1]
+                            # 완전 동일 텍스트 + 매우 근접(0.1초) + 짧은 segment(0.6초 미만)
+                            if (text == prev_text and 
+                                abs(start - prev_e) < 0.1 and 
+                                (end - start) < 0.6):
+                                continue
+                        
+                        refined_segments.append((text, float(start), float(end)))
+                        prev_start = start
+                        prev_end_check = end
+                        prev_end = end
+                        
+                        if fallback:
+                            fallback_count += 1
+                    
+                    raw_segments = refined_segments
+                    print(f"✅ WhisperX alignment 성공! {len(raw_segments)}개 세그먼트 (fallback: {fallback_count}개)")
                 else:
                     print("WARNING: WhisperX service returned empty segments. Using original timestamps.")
             except Exception as wx_err:
                 print(f"WARNING: WhisperX service failed: {wx_err}. Using original timestamps.")
+
         
         # [Split 단계] "Number X. 질문? 대화" 분리
         split_segments = []
@@ -811,22 +1018,26 @@ def process_lc_transcription(audio_id: int, file_path: str):
             set_match = re.search(r"(Questions?|Number)\s*(\d+)\s*(through|and|-|to)\s*(\d+)", text, re.IGNORECASE)
 
             
-            # 3-2. Detect Individual Question Start (e.g., "Number 1", "Question 1")
-            q_match = re.search(r"(Number|Question)\s*(\d+)", text, re.IGNORECASE)
+            # 3-2. Detect Individual Question Start (e.g., "Number 1.", "Question 1")
+            # [FIX] 문장 시작만 인식 - set 안내문 안의 숫자 제외
+            q_match = re.match(r"^\s*Number\s*(\d+)\b", text, re.IGNORECASE)
             
             if set_match:
                 # Start of a new set.
                 current_question = None 
                 
-                start_q = int(set_match.group(2))  # Changed from group(1)
-                end_q = int(set_match.group(4))    # Changed from group(3)
-
+                # [FIX 2] 새 set 시작 시 이전 pending_context 초기화
+                pending_context = []
                 
+                start_q = int(set_match.group(2))
+                end_q = int(set_match.group(4))
+
                 # Initialize new set info
                 active_set_info = {
                     "start": start_q,
                     "end": end_q,
-                    "context_transcripts": []
+                    "context_transcripts": [],
+                    "context_saved": False  # [FIX 1] 중복 할당 방지 플래그
                 }
                 
                 # The instruction itself is part of the context
@@ -837,7 +1048,6 @@ def process_lc_transcription(audio_id: int, file_path: str):
                 active_set_info["context_transcripts"].append(transcript_obj)
 
                 # retroactively update set_number for questions that might have been created before this header
-                # (e.g., if "Number 7" appeared before "Questions 7 through 9")
                 try:
                     existing_questions_in_range = db.query(models.ToeicQuestion).filter(
                         models.ToeicQuestion.audio_id == audio_id,
@@ -853,16 +1063,25 @@ def process_lc_transcription(audio_id: int, file_path: str):
                 except Exception as e:
                     print(f"Error retroactively updating set numbers: {e}")
 
+            # [FIX #1] 독립 처리: q_match는 항상 체크 (set_match와 별도)
+            # 같은 세그먼트에 "Questions X through Y" + "Number X"가 있으면 둘 다 처리
+            if q_match:
+                q_val = int(q_match.group(1))  # group(1)로 변경 (정규식 수정됨)
                 
-            elif q_match:
-                q_val = int(q_match.group(2))
+                # [FIX v2-2] Number X = 절대 경계 (이전 question 즉시 종료)
+                # 새 question 시작 = 이전 question 완전 종료
+                previous_question = current_question
+                current_question = None
                 
                 # Determine set number
                 current_set_num = None
                 if active_set_info and active_set_info["start"] <= q_val <= active_set_info["end"]:
                     current_set_num = active_set_info["start"]
                 else:
+                    # [FIX 2] set 범위 벗어나면 pending_context도 초기화
                     active_set_info = None
+                    pending_context = []
+
 
                 # Create or find question
                 existing_q = db.query(models.ToeicQuestion).filter(
@@ -893,35 +1112,37 @@ def process_lc_transcription(audio_id: int, file_path: str):
                             start_time=ctx["start"],
                             end_time=ctx["end"],
                             text=ctx["text"],
-                            label="conversation" # Context is conversation
+                            label="conversation"
                         )
                         db.add(db_transcript)
                         if ctx["start"] < current_question.start_time:
                             current_question.start_time = ctx["start"]
                     pending_context = []
                 
-                # Attach Context (Conversation) - Inherited from Set
+                # [FIX 1] Attach Context - Inherited from Set (첫 번째 question만!)
                 elif active_set_info and active_set_info["context_transcripts"]:
-                    for ctx in active_set_info["context_transcripts"]:
-                         db_transcript = models.ToeicTranscript(
-                            question_id=current_question.id,
-                            start_time=ctx["start"],
-                            end_time=ctx["end"],
-                            text=ctx["text"],
-                            label="conversation" # Context is conversation
-                        )
-                         db.add(db_transcript)
-                         if ctx["start"] < current_question.start_time:
-                            current_question.start_time = ctx["start"]
+                    if not active_set_info.get("context_saved", False):
+                        # set 첫 번째 question에만 context 저장
+                        for ctx in active_set_info["context_transcripts"]:
+                            db_transcript = models.ToeicTranscript(
+                                question_id=current_question.id,
+                                start_time=ctx["start"],
+                                end_time=ctx["end"],
+                                text=ctx["text"],
+                                label="conversation"
+                            )
+                            db.add(db_transcript)
+                            if ctx["start"] < current_question.start_time:
+                                current_question.start_time = ctx["start"]
+                        active_set_info["context_saved"] = True  # 중복 방지
                 
                 # Finally, add the Question Text itself ("Number X...")
-                # This segment is definitely a question reading.
                 db_transcript = models.ToeicTranscript(
                     question_id=current_question.id,
                     start_time=start,
                     end_time=end,
                     text=text,
-                    label="question" # Marking as question text
+                    label="question"
                 )
                 db.add(db_transcript)
 
@@ -963,6 +1184,58 @@ def process_lc_transcription(audio_id: int, file_path: str):
                         active_set_info["context_transcripts"].append(transcript_obj)
 
             # 4. Add to Transcripts -> Moved inside logical blocks above
+            
+        # [FIX 4] DB commit 전 시간 순서 검증 (겹침 수정)
+        print(f"[STEP 5/5] 시간 순서 검증 및 겹침 수정 중...")
+        try:
+            all_questions = db.query(models.ToeicQuestion).filter(
+                models.ToeicQuestion.audio_id == audio_id
+            ).all()
+            
+            fixed_count = 0
+            dedup_count = 0
+            
+            # [FIX] Cross-question 중복 제거: audio_id 전체 단위로 seen 관리
+            seen_global = set()  # (text, rounded_start, rounded_end) - 전역
+            
+            for q in all_questions:
+                transcripts = db.query(models.ToeicTranscript).filter(
+                    models.ToeicTranscript.question_id == q.id
+                ).order_by(models.ToeicTranscript.start_time).all()
+                
+                to_delete = []
+                
+                prev_end = 0.0
+                for t in transcripts:
+                    # 시간 겹침 수정
+                    if t.start_time < prev_end:
+                        t.start_time = prev_end + 0.02
+                        fixed_count += 1
+                    if t.end_time <= t.start_time:
+                        t.end_time = t.start_time + 0.5
+                        fixed_count += 1
+                    
+                    # [FIX] Cross-question 중복 체크: audio_id 전체 단위
+                    dedup_key = (t.text.strip(), round(t.start_time, 1), round(t.end_time, 1))
+                    if dedup_key in seen_global:
+                        to_delete.append(t)
+                        dedup_count += 1
+                    else:
+                        seen_global.add(dedup_key)
+                        prev_end = t.end_time
+                
+                # 중복 삭제
+                for t in to_delete:
+                    db.delete(t)
+            
+            if fixed_count > 0:
+                print(f"✅ 시간 겹침 {fixed_count}건 수정됨")
+            if dedup_count > 0:
+                print(f"✅ Cross-question 중복 {dedup_count}건 제거됨")
+            db.flush()
+        except Exception as fix_err:
+            print(f"Warning: 시간 순서 검증 중 오류: {fix_err}")
+            
             
         db_audio.status = "completed"
         db_audio.progress = 100

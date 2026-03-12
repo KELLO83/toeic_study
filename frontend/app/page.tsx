@@ -141,13 +141,18 @@ export default function Home() {
   // AI Model Selection State
   const [modelType, setModelType] = useState<"exaone" | "solar-pro">("solar-pro")
 
+  const [isUploading, setIsUploading] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const [fetchError, setFetchError] = useState<string | null>(null)
+  const isDenseView = itemsPerPage === 15
+  const isComfortView = itemsPerPage === 10
+  const listHeightClass = isDenseView ? "h-[calc(100vh-205px)]" : "h-[calc(100vh-230px)]"
 
   const fetchWords = async () => {
     try {
       setLoading(true)
       setFetchError(null)
-      const res = await fetch("http://localhost:8000/words?limit=200")
+      const res = await fetch("http://localhost:8000/words")
       if (!res.ok) throw new Error("Server response not ok")
       const data = await res.json()
       setWords(data)
@@ -162,6 +167,46 @@ export default function Home() {
   useEffect(() => {
     fetchWords()
   }, [])
+
+  // Filter Logic
+  const allFilteredWords = words.filter((w) =>
+    w.word.toLowerCase().includes(search.toLowerCase()) ||
+    w.meaning.includes(search)
+  )
+
+  // Pagination Logic
+  const totalPages = Math.ceil(allFilteredWords.length / itemsPerPage)
+  const filteredWords = allFilteredWords.slice(
+    (currentPage - 1) * itemsPerPage,
+    currentPage * itemsPerPage
+  )
+
+  useEffect(() => {
+    const handlePageHotkeys = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      const tagName = target?.tagName
+      const isTypingTarget =
+        tagName === "INPUT" ||
+        tagName === "TEXTAREA" ||
+        tagName === "SELECT" ||
+        target?.isContentEditable
+
+      if (isTypingTarget || totalPages <= 1) return
+
+      if (event.key === "ArrowLeft") {
+        event.preventDefault()
+        setCurrentPage((prev) => (prev === 1 ? totalPages : prev - 1))
+      }
+
+      if (event.key === "ArrowRight") {
+        event.preventDefault()
+        setCurrentPage((prev) => (prev === totalPages ? 1 : prev + 1))
+      }
+    }
+
+    window.addEventListener("keydown", handlePageHotkeys)
+    return () => window.removeEventListener("keydown", handlePageHotkeys)
+  }, [totalPages])
 
   // Add Word Logic
   const handleAddWord = async (confirmed = false, directWord?: string, directMeaning?: string) => {
@@ -224,6 +269,44 @@ export default function Home() {
     }
   }
 
+  // Upload Excel Logic
+  const handleExcelUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    // Confirm deletion
+    if (!window.confirm("엑셀 파일을 업로드하면 기존 단어들이 모두 삭제되고 엑셀의 단어로 교체됩니다. 계속하시겠습니까?")) {
+      e.target.value = ""
+      return
+    }
+
+    setIsUploading(true)
+    const formData = new FormData()
+    formData.append("file", file)
+
+    try {
+      const res = await fetch("http://127.0.0.1:8000/words/upload", {
+        method: "POST",
+        body: formData,
+      })
+      const data = await res.json()
+
+      if (res.ok && data.status === "SUCCESS") {
+        await fetchWords()
+        setCurrentPage(1)
+        alert(data.message)
+      } else {
+        alert(`업로드 실패: ${data.detail || data.message || "알 수 없는 오류"}`)
+      }
+    } catch (err) {
+      console.error("Upload Error:", err)
+      alert("서버 연결 실패 또는 업로드 중 오류가 발생했습니다.")
+    } finally {
+      setIsUploading(false)
+      e.target.value = "" // Reset input
+    }
+  }
+
   // Chat Logic
   const handleSendMessage = async () => {
     if (!chatMessage.trim()) return
@@ -254,34 +337,21 @@ export default function Home() {
     }
   }
 
-  // Filter Logic
-  const allFilteredWords = words.filter((w) =>
-    w.word.toLowerCase().includes(search.toLowerCase()) ||
-    w.meaning.includes(search)
-  )
-
-  // Pagination Logic
-  const totalPages = Math.ceil(allFilteredWords.length / itemsPerPage)
-  const filteredWords = allFilteredWords.slice(
-    (currentPage - 1) * itemsPerPage,
-    currentPage * itemsPerPage
-  )
-
   return (
     <main className="min-h-screen bg-slate-50 dark:bg-[#0d1117] transition-colors duration-300 font-sans selection:bg-indigo-100 selection:text-indigo-900 dark:selection:bg-indigo-900 dark:selection:text-indigo-100">
-      <div className="max-w-3xl mx-auto px-6 py-12 space-y-8">
+      <div className={`mx-auto px-4 ${isDenseView ? "max-w-6xl py-2.5 space-y-2" : "max-w-5xl py-3 space-y-3"}`}>
 
         {/* Header Section */}
-        <div className="flex flex-col gap-6">
-          <div className="flex justify-between items-start">
+        <div className={`flex flex-col ${isDenseView ? "gap-1" : "gap-2"}`}>
+          <div className={`flex flex-col ${isDenseView ? "gap-1" : "gap-2"} xl:flex-row xl:justify-between xl:items-start`}>
             <div>
-              <h1 className="text-4xl font-extrabold tracking-tight text-slate-900 dark:text-white transition-colors">TOEIC Whisper</h1>
-              <p className="text-slate-500 mt-2 text-lg">Your Personal Vocabulary Coach</p>
+              <h1 className={`${isDenseView ? "text-2xl" : "text-[30px]"} font-extrabold tracking-tight text-slate-900 dark:text-white transition-colors`}>TOEIC Whisper</h1>
+              <p className={`text-slate-500 mt-0.5 ${isDenseView ? "text-[11px]" : "text-xs"}`}>Your Personal Vocabulary Coach</p>
             </div>
 
             {/* Study Mode Toggle Area */}
-            <div className="flex flex-col gap-3 items-end">
-              <div className="flex gap-4 items-center">
+            <div className={`flex flex-col ${isDenseView ? "gap-1" : "gap-1"} xl:items-end`}>
+              <div className="flex flex-wrap gap-2 items-center xl:justify-end">
                 {/* Accent Toggle */}
                 <div className="bg-white border border-slate-200 dark:bg-[#161b22] dark:border-[#30363d] rounded-lg p-1 flex gap-1">
                   <button
@@ -307,7 +377,7 @@ export default function Home() {
                 {/* Study Mode Toggle */}
                 <div
                   onClick={() => setIsStudyMode(!isStudyMode)}
-                  className={`cursor-pointer group flex items-center gap-3 px-4 py-2 rounded-full transition-all border ${isStudyMode
+                  className={`cursor-pointer group flex items-center gap-2 px-3 py-1.5 rounded-full transition-all border ${isStudyMode
                     ? "bg-indigo-50 border-indigo-200 dark:bg-indigo-900/20 dark:border-indigo-500/50"
                     : "bg-white border-slate-200 dark:bg-[#161b22] dark:border-[#30363d] hover:border-indigo-200"
                     }`}
@@ -325,7 +395,7 @@ export default function Home() {
                 {/* Dark Mode Toggle */}
                 <div
                   onClick={() => setIsDarkMode(!isDarkMode)}
-                  className={`cursor-pointer group flex items-center gap-3 px-4 py-2 rounded-full transition-all border ${isDarkMode
+                  className={`cursor-pointer group flex items-center gap-2 px-3 py-1.5 rounded-full transition-all border ${isDarkMode
                     ? "bg-slate-800 border-slate-700"
                     : "bg-white border-slate-200 hover:border-indigo-200"
                     }`}
@@ -346,18 +416,17 @@ export default function Home() {
                     setItemsPerPage(Number(e.target.value))
                     setCurrentPage(1)
                   }}
-                  className="h-10 bg-white dark:bg-[#161b22] border border-slate-200 dark:border-[#30363d] text-slate-700 dark:text-[#c9d1d9] text-sm rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block px-2.5 outline-none cursor-pointer hover:bg-slate-50 dark:hover:bg-[#21262d] transition-colors"
+                  className={`${isDenseView ? "h-8 text-xs" : "h-9 text-sm"} bg-white dark:bg-[#161b22] border border-slate-200 dark:border-[#30363d] text-slate-700 dark:text-[#c9d1d9] rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block px-2.5 outline-none cursor-pointer hover:bg-slate-50 dark:hover:bg-[#21262d] transition-colors`}
                 >
                   <option value={10}>10 items</option>
-                  <option value={30}>30 items</option>
-                  <option value={50}>50 items</option>
+                  <option value={15}>15 items</option>
                 </select>
               </div>
 
               {/* LLM Chat Button */}
               <Button
                 onClick={() => setIsChatOpen(!isChatOpen)}
-                className={`h-10 px-5 rounded-full font-bold transition-all shadow-md ${isChatOpen
+                className={`${isDenseView ? "h-8 px-3 text-[11px]" : "h-8.5 px-4 text-xs"} rounded-full font-bold transition-all shadow-md ${isChatOpen
                   ? "bg-orange-500 hover:bg-orange-600 text-white"
                   : "bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-700 hover:to-indigo-600 text-white"
                   }`}
@@ -430,25 +499,40 @@ export default function Home() {
         )}
 
         {/* Search and Add Section */}
-        <div className="flex gap-3">
+        <div className={`flex flex-wrap ${isDenseView ? "gap-1.5" : "gap-2"}`}>
           <div className="relative flex-1">
-            <span className="absolute left-3 top-3 text-slate-400">🔍</span>
+            <span className={`absolute left-3 ${isDenseView ? "top-2" : "top-2.5"} text-slate-400`}>🔍</span>
             <Input
               placeholder="Search vocabulary..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="pl-10 h-11 bg-white dark:bg-[#010409] border-slate-200 dark:border-[#30363d] focus:border-indigo-500 focus:ring-indigo-500/20 text-base dark:text-[#c9d1d9] transition-all shadow-sm"
+              className={`pl-10 ${isDenseView ? "h-9 text-xs" : "h-10 text-sm"} bg-white dark:bg-[#010409] border-slate-200 dark:border-[#30363d] focus:border-indigo-500 focus:ring-indigo-500/20 dark:text-[#c9d1d9] transition-all shadow-sm`}
             />
           </div>
           <Button
             onClick={() => setIsModalOpen(true)}
-            className="h-11 px-6 bg-indigo-600 hover:bg-indigo-700 text-white font-medium shadow-sm hover:shadow-md transition-all"
+            className={`${isDenseView ? "h-9 px-3 text-xs" : "h-9.5 px-4 text-sm"} bg-indigo-600 hover:bg-indigo-700 text-white font-medium shadow-sm hover:shadow-md transition-all`}
           >
             + Add Word
           </Button>
           <Button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isUploading}
+            className={`${isDenseView ? "h-9 px-3 text-xs" : "h-9.5 px-4 text-sm"} bg-orange-600 hover:bg-orange-700 text-white font-medium shadow-sm hover:shadow-md transition-all`}
+            title="Upload Excel"
+          >
+            {isUploading ? "⏳ Uploading..." : "📤 Upload"}
+          </Button>
+          <input
+            type="file"
+            accept=".xlsx, .xls"
+            className="hidden"
+            ref={fileInputRef}
+            onChange={handleExcelUpload}
+          />
+          <Button
             onClick={() => window.open("http://localhost:8000/words/export", "_blank")}
-            className="h-11 px-4 bg-green-600 hover:bg-green-700 text-white font-medium shadow-sm hover:shadow-md transition-all"
+            className={`${isDenseView ? "h-9 px-3 text-xs" : "h-9.5 px-4 text-sm"} bg-green-600 hover:bg-green-700 text-white font-medium shadow-sm hover:shadow-md transition-all`}
             title="Export to Excel"
           >
             📥 Excel
@@ -456,7 +540,7 @@ export default function Home() {
         </div>
 
         {/* Content Section: Custom List */}
-        <div className="space-y-3">
+        <div className="space-y-1">
           {fetchError ? (
             <div className="text-center py-10 px-4 text-red-500 bg-red-50 dark:bg-red-900/10 rounded-xl border border-red-100 dark:border-red-900/30">
               <p className="font-bold text-lg mb-2">😢 데이터를 불러오지 못했습니다.</p>
@@ -468,20 +552,26 @@ export default function Home() {
               Loading your collection...
             </div>
           ) : filteredWords.length > 0 ? (
-            filteredWords.map((word) => (
-              <div
-                key={word.id}
-                className="group bg-white dark:bg-[#161b22] rounded-xl border border-slate-100 dark:border-[#30363d] p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm hover:shadow-md hover:border-indigo-100 dark:hover:border-indigo-900 transition-all duration-200"
-              >
-                <div className="flex items-center gap-4">
-                  <span className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-300 flex items-center justify-center text-xs font-mono font-medium">
+            <div
+              className={`${listHeightClass} overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-[#30363d] dark:bg-[#161b22]`}
+              style={{
+                display: "grid",
+                gridTemplateRows: `repeat(${filteredWords.length}, minmax(0, 1fr))`,
+              }}
+            >
+              {filteredWords.map((word) => (
+                <div
+                  key={word.id}
+                  className={`group grid ${isDenseView ? "grid-cols-[34px_30px_minmax(96px,156px)_minmax(0,1fr)] gap-1.5 px-2.5 py-1.5" : "grid-cols-[40px_36px_minmax(136px,210px)_minmax(0,1fr)] gap-2 px-3 py-2 sm:gap-3"} min-h-0 items-center border-b border-slate-100 last:border-b-0 dark:border-[#30363d]`}
+                >
+                  <span className={`${isDenseView ? "w-6 h-6 text-[10px]" : "w-8 h-8 text-[11px]"} rounded-full bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-300 flex items-center justify-center font-mono font-medium`}>
                     {word.id}
                   </span>
 
                   <button
                     onClick={() => playAudio(word.word, word.id)}
-                    className={`w-10 h-10 rounded-full flex items-center justify-center transition-all ${playingId === word.id
-                      ? "bg-indigo-600 text-white shadow-lg scale-110"
+                    className={`${isDenseView ? "w-7 h-7 text-xs" : "w-8 h-8 text-sm"} rounded-full flex items-center justify-center transition-all ${playingId === word.id
+                      ? "bg-indigo-600 text-white shadow"
                       : "bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-400 dark:text-slate-300 hover:text-indigo-600 hover:border-indigo-200 dark:hover:border-indigo-500"
                       }`}
                   >
@@ -490,27 +580,26 @@ export default function Home() {
 
                   <span
                     onDoubleClick={() => window.open(`https://dic.daum.net/search.do?q=${word.word}`, '_blank')}
-                    className="text-xl font-bold text-slate-800 dark:text-slate-100 tracking-tight group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors cursor-pointer"
+                    className={`${isDenseView ? "text-[13px]" : isComfortView ? "text-[18px] sm:text-[19px]" : "text-[15px] sm:text-base"} truncate font-bold text-slate-800 dark:text-slate-100 tracking-tight group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors cursor-pointer`}
                     title="Double-click to search in dictionary"
                   >
                     {word.word}
                   </span>
-                </div>
 
-                <div className="flex items-center gap-4 pl-12 sm:pl-0">
                   <span
                     onClick={() => toggleReveal(word.id)}
                     className={
-                      "text-lg text-slate-600 dark:text-slate-300 font-medium transition-all duration-300 " +
-                      (isStudyMode ? "cursor-pointer select-none px-2 rounded hover:bg-slate-100 dark:hover:bg-slate-800 " : "") +
+                      `${isDenseView ? "text-[13px] leading-4 truncate" : isComfortView ? "text-[17px] leading-6" : "text-[15px] leading-5"} text-slate-600 dark:text-slate-300 transition-all duration-300 ` +
+                      (isStudyMode ? `${isDenseView ? "cursor-pointer select-none px-1 py-0.5" : "cursor-pointer select-none px-1.5 py-0.5"} rounded hover:bg-slate-100 dark:hover:bg-slate-800 ` : "") +
                       (isStudyMode && !revealedIds.includes(word.id) ? "blur-md bg-slate-100 dark:bg-slate-800" : "")
                     }
+                    title={word.meaning}
                   >
                     {word.meaning}
                   </span>
                 </div>
-              </div>
-            ))
+              ))}
+            </div>
           ) : (
             <div className="text-center py-20 text-slate-400 bg-white dark:bg-[#161b22] rounded-xl border border-dashed border-slate-200 dark:border-[#30363d]">
               No words found. Time to add some! ✍️
@@ -520,21 +609,21 @@ export default function Home() {
 
         {/* Pagination Controls */}
         {allFilteredWords.length > itemsPerPage && (
-          <div className="flex justify-center items-center gap-4 pt-2 pb-8">
+          <div className={`flex justify-center items-center ${isDenseView ? "gap-3 pt-0.5 pb-1" : "gap-4 pt-0.5 pb-1"}`}>
             <Button
               variant="outline"
               onClick={() => setCurrentPage(prev => (prev === 1 ? totalPages : prev - 1))}
-              className="dark:bg-[#161b22] dark:border-[#30363d] dark:text-[#c9d1d9] dark:hover:bg-[#21262d]"
+              className={`${isDenseView ? "h-8 px-3 text-xs" : ""} dark:bg-[#161b22] dark:border-[#30363d] dark:text-[#c9d1d9] dark:hover:bg-[#21262d]`}
             >
               Previous
             </Button>
-            <span className="text-sm font-medium text-slate-600 dark:text-[#8b949e]">
+            <span className={`${isDenseView ? "text-xs" : "text-sm"} font-medium text-slate-600 dark:text-[#8b949e]`}>
               Page {currentPage} of {totalPages}
             </span>
             <Button
               variant="outline"
               onClick={() => setCurrentPage(prev => (prev === totalPages ? 1 : prev + 1))}
-              className="dark:bg-[#161b22] dark:border-[#30363d] dark:text-[#c9d1d9] dark:hover:bg-[#21262d]"
+              className={`${isDenseView ? "h-8 px-3 text-xs" : ""} dark:bg-[#161b22] dark:border-[#30363d] dark:text-[#c9d1d9] dark:hover:bg-[#21262d]`}
             >
               Next
             </Button>
