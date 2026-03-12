@@ -1,7 +1,6 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import Link from "next/link"
 import { usePathname } from "next/navigation"
 
 export default function SidebarLayout({
@@ -41,22 +40,13 @@ export default function SidebarLayout({
 
                 {/* Navigation Links */}
                 <nav className="flex-1 p-3 space-y-2 mt-2 overflow-hidden">
-                    <Link
-                        href="/"
-                        className={`flex items-center gap-3 px-3 py-3 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/50 hover:text-indigo-600 dark:hover:text-indigo-400 rounded-xl transition-all group font-semibold whitespace-nowrap ${pathname === "/" ? "bg-indigo-50 dark:bg-slate-800 text-indigo-700 dark:text-indigo-300" : ""}`}
+                    <div
+                        className={`flex items-center gap-3 px-3 py-3 text-slate-700 dark:text-slate-300 rounded-xl transition-all group font-semibold whitespace-nowrap ${pathname === "/" ? "bg-indigo-50 dark:bg-slate-800 text-indigo-700 dark:text-indigo-300" : ""}`}
                         title="Vocabulary"
                     >
                         <span className="text-xl group-hover:scale-110 transition-transform min-w-[24px] text-center">📚</span>
                         <span className={`transition-opacity duration-300 ${isCollapsed ? "opacity-0 w-0 hidden" : "opacity-100"}`}>Vocabulary</span>
-                    </Link>
-                    <Link
-                        href="/lc"
-                        className={`flex items-center gap-3 px-3 py-3 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/50 hover:text-indigo-600 dark:hover:text-indigo-400 rounded-xl transition-all group font-semibold whitespace-nowrap ${pathname === "/lc" ? "bg-indigo-50 dark:bg-slate-800 text-indigo-700 dark:text-indigo-300" : ""}`}
-                        title="Listening"
-                    >
-                        <span className="text-xl group-hover:scale-110 transition-transform min-w-[24px] text-center">🎧</span>
-                        <span className={`transition-opacity duration-300 ${isCollapsed ? "opacity-0 w-0 hidden" : "opacity-100"}`}>Listening</span>
-                    </Link>
+                    </div>
                 </nav>
 
                 {/* Footer / Version Info */}
