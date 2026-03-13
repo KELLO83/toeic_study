@@ -579,17 +579,29 @@ export default function Home() {
                   </div>
                 </div>
 
-                <select
-                  value={itemsPerPage}
-                  onChange={(event) => {
-                    setItemsPerPage(Number(event.target.value))
-                    setCurrentPage(1)
-                  }}
-                  className={`${isDenseView ? "h-8 px-2.5 text-xs" : "h-9 px-2.5 text-sm"} block cursor-pointer rounded-lg border border-slate-200 bg-white text-slate-700 outline-none transition-colors hover:bg-slate-50 focus:border-indigo-500 focus:ring-indigo-500 dark:border-[#30363d] dark:bg-[#161b22] dark:text-[#c9d1d9] dark:hover:bg-[#21262d]`}
-                >
-                  <option value={10}>10 items</option>
-                  <option value={15}>15 items</option>
-                </select>
+                <div className="inline-flex items-center rounded-lg border border-slate-200 bg-white p-1 shadow-sm dark:border-[#30363d] dark:bg-[#161b22]">
+                  {[10, 15].map((count) => {
+                    const isActive = itemsPerPage === count
+
+                    return (
+                      <button
+                        key={count}
+                        type="button"
+                        onClick={() => {
+                          setItemsPerPage(count)
+                          setCurrentPage(1)
+                        }}
+                        className={`${isDenseView ? "h-8 px-2.5 text-[11px]" : "h-9 px-3 text-xs"} rounded-md font-semibold transition-all ${
+                          isActive
+                            ? "bg-indigo-600 text-white shadow-sm"
+                            : "text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-[#21262d]"
+                        }`}
+                      >
+                        {count} items
+                      </button>
+                    )
+                  })}
+                </div>
               </div>
 
               <Button
