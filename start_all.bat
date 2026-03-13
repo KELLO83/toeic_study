@@ -8,10 +8,10 @@ echo.
 echo [1/2] Starting Backend Server (Python/FastAPI)...
 cd /d "%~dp0"
 if exist ".venv\Scripts\python.exe" (
-    start "Backend Server" cmd /k "set WHISPERX_SERVICE_URL=http://localhost:8011 && set WHISPER_FW_SERVICE_URL=http://localhost:8010 && .venv\Scripts\python.exe backend_server.py"
+    start "Backend Server" cmd /k ".venv\Scripts\python.exe backend_server.py"
 ) else (
     echo [WARN] .venv not found. Using system Python.
-    start "Backend Server" cmd /k "set WHISPERX_SERVICE_URL=http://localhost:8011 && set WHISPER_FW_SERVICE_URL=http://localhost:8010 && python backend_server.py"
+    start "Backend Server" cmd /k "python backend_server.py"
 )
 
 echo.

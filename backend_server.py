@@ -140,6 +140,7 @@ def validate_with_llm(word: str, meaning: str):
 
 # Load API Key from secrets.json
 SOLAR_API_KEY = ""
+OPENROUTER_REASONING_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
 try:
     with open("secrets.json", "r") as f:
         secrets = json.load(f)
@@ -189,7 +190,7 @@ def validate_with_solar_pro(word: str, meaning: str):
     try:
         # First API Call to generate reasoning (although we don't strictly use it for JSON parsing, sticking to user request style)
         response = client.chat.completions.create(
-            model="upstage/solar-pro-3:free",
+            model=OPENROUTER_REASONING_MODEL,
             messages=messages,
             extra_body={"reasoning": {"enabled": True}}
         )
@@ -231,7 +232,7 @@ async def chat_with_solar(req: ChatRequest):
     messages = [
         {
             "role": "system", 
-            "content": "당신은 TOEIC Whisper의 전담 AI 튜터 'Solar'입니다. 현재 채팅창은 마크다운(#, * 등)을 지원하지 않으므로, 이모지와 줄바꿈만을 이용해 가독성 있게 답변하세요. 1. [핵심 요약]을 이모지 📌와 함께 한 줄로 간단히 적고 줄을 바꾸세요. 2. 주요 내용은 💡 이모지와 함께 번호를 매겨 최대 3개까지만 짧게 설명하세요. 3. 예문은 📝 이모지와 함께 영어 문장 - 한글 해석 순으로 적으세요. 4. 각 섹션 사이에는 빈 줄을 넣어 간격을 넓게 벌리세요. 5. 마크다운 기호(##, **, >, - 등)는 절대 사용하지 마세요."
+            "content": "당신은 TOEIC Whisper의 전담 AI 튜터 'Nemotron'입니다. 현재 채팅창은 마크다운(#, * 등)을 지원하지 않으므로, 이모지와 줄바꿈만을 이용해 가독성 있게 답변하세요. 1. [핵심 요약]을 이모지 📌와 함께 한 줄로 간단히 적고 줄을 바꾸세요. 2. 주요 내용은 💡 이모지와 함께 번호를 매겨 최대 3개까지만 짧게 설명하세요. 3. 예문은 📝 이모지와 함께 영어 문장 - 한글 해석 순으로 적으세요. 4. 각 섹션 사이에는 빈 줄을 넣어 간격을 넓게 벌리세요. 5. 마크다운 기호(##, **, >, - 등)는 절대 사용하지 마세요."
         }
     ]
     # Add history
@@ -242,7 +243,7 @@ async def chat_with_solar(req: ChatRequest):
 
     try:
         response = client.chat.completions.create(
-            model="upstage/solar-pro-3:free",
+            model=OPENROUTER_REASONING_MODEL,
             messages=messages,
             extra_body={"reasoning": {"enabled": True}}
         )
