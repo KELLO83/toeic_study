@@ -35,6 +35,8 @@ interface GameResult {
   eventuallyCorrect: boolean
 }
 
+type UploadDialogState = "closed" | "confirm" | "uploading" | "success" | "error"
+
 const shuffleArray = <T,>(items: T[]) => {
   const cloned = [...items]
   for (let index = cloned.length - 1; index > 0; index -= 1) {
@@ -97,16 +99,12 @@ export default function Home() {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const timeoutRef = useRef<NodeJS.Timeout | null>(null)
 
-  const [isModalOpen, setIsModalOpen] = useState(false)
-  const [newWord, setNewWord] = useState("")
-  const [newMeaning, setNewMeaning] = useState("")
-  const [addStatus, setAddStatus] = useState<"idle" | "validating" | "success" | "error" | "suggestion" | "confirm_needed">("idle")
-  const [statusMessage, setStatusMessage] = useState("")
-  const [suggestion, setSuggestion] = useState<any>(null)
-  const [modelType, setModelType] = useState<"exaone" | "solar-pro">("solar-pro")
   const [isUploading, setIsUploading] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [fetchError, setFetchError] = useState<string | null>(null)
+  const [uploadDialogState, setUploadDialogState] = useState<UploadDialogState>("closed")
+  const [uploadDialogMessage, setUploadDialogMessage] = useState("")
+  const [selectedUploadFile, setSelectedUploadFile] = useState<File | null>(null)
 
   const [viewMode, setViewMode] = useState<"list" | "game" | "result">("list")
   const [gameQuestions, setGameQuestions] = useState<GameQuestion[]>([])
@@ -256,7 +254,8 @@ export default function Home() {
   const startMiniGame = (sourceWords: Word[]) => {
     const eligibleWords = sourceWords.filter((item) => item.word.trim() && item.meaning.trim())
     if (eligibleWords.length < 4) {
-      alert("미니게임을 시작하려면 뜻이 있는 단어가 최소 4개 필요합니다.")
+      setUploadDialogState("error")
+      setUploadDialogMessage("미니게임을 시작하려면 뜻이 있는 단어가 최소 4개 필요합니다.")
       return
     }
 
@@ -337,75 +336,23 @@ export default function Home() {
     }, 900)
   }
 
-  const handleAddWord = async (confirmed = false, directWord?: string, directMeaning?: string) => {
-    const targetWord = directWord || newWord
-    const targetMeaning = directMeaning || newMeaning
-
-    if (!targetWord) {
-      alert("단어를 입력해주세요.")
-      return
-    }
-
-    setAddStatus("validating")
-    if (!confirmed) {
-      setStatusMessage("AI 선생님이 단어를 꼼꼼히 검수하고 있습니다... 🤖")
-    }
-
-    try {
-      const response = await fetch("http://127.0.0.1:8000/words", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          word: targetWord,
-          meaning: targetMeaning,
-          confirmed,
-          model_type: modelType,
-        }),
-      })
-      const data = await response.json()
-
-      if (data.status === "SUCCESS") {
-        setAddStatus("success")
-        setStatusMessage(data.message)
-        fetchWords()
-        setTimeout(() => {
-          setIsModalOpen(false)
-          setAddStatus("idle")
-          setNewWord("")
-          setNewMeaning("")
-        }, 1500)
-      } else if (data.status === "CONFIRM_NEEDED") {
-        setAddStatus("confirm_needed")
-        setStatusMessage(data.message)
-      } else if (data.status === "SUGGESTION") {
-        setAddStatus("suggestion")
-        setSuggestion(data.suggestion)
-        setStatusMessage("잠깐! AI가 수정을 제안했습니다.")
-      } else if (data.status === "DUPLICATE") {
-        setAddStatus("error")
-        setStatusMessage(data.message)
-      } else {
-        setAddStatus("error")
-        setStatusMessage(data.message || "알 수 없는 오류가 발생했습니다.")
-      }
-    } catch (_error) {
-      setAddStatus("error")
-      setStatusMessage("서버 연결 실패")
-    }
-  }
-
   const handleExcelUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return
 
-    if (!window.confirm("엑셀 파일을 업로드하면 기존 단어들이 모두 삭제되고 엑셀의 단어로 교체됩니다. 계속하시겠습니까?")) {
-      event.target.value = ""
-      return
-    }
+    setSelectedUploadFile(file)
+    setUploadDialogState("confirm")
+    setUploadDialogMessage(`"${file.name}" 업로드 시 기존 단어가 모두 삭제되고, 엑셀 단어로 전체 교체됩니다.`)
+    event.target.value = ""
+  }
 
+  const runExcelUpload = async () => {
+    if (!selectedUploadFile) return
+
+    setUploadDialogState("uploading")
     setIsUploading(true)
     const formData = new FormData()
-    formData.append("file", file)
+    formData.append("file", selectedUploadFile)
 
     try {
       const response = await fetch("http://127.0.0.1:8000/words/upload", {
@@ -417,16 +364,19 @@ export default function Home() {
       if (response.ok && data.status === "SUCCESS") {
         await fetchWords()
         setCurrentPage(1)
-        alert(data.message)
+        setUploadDialogState("success")
+        setUploadDialogMessage(data.message)
       } else {
-        alert(`업로드 실패: ${data.detail || data.message || "알 수 없는 오류"}`)
+        setUploadDialogState("error")
+        setUploadDialogMessage(`업로드 실패: ${data.detail || data.message || "알 수 없는 오류"}`)
       }
     } catch (error) {
       console.error("Upload Error:", error)
-      alert("서버 연결 실패 또는 업로드 중 오류가 발생했습니다.")
+      setUploadDialogState("error")
+      setUploadDialogMessage("서버 연결 실패 또는 업로드 중 오류가 발생했습니다.")
     } finally {
       setIsUploading(false)
-      event.target.value = ""
+      setSelectedUploadFile(null)
     }
   }
 
@@ -692,12 +642,6 @@ export default function Home() {
                   className={`pl-10 ${isDenseView ? "h-9 text-xs" : "h-10 text-sm"} border-slate-200 bg-white shadow-sm transition-all focus:border-indigo-500 focus:ring-indigo-500/20 dark:border-[#30363d] dark:bg-[#010409] dark:text-[#c9d1d9]`}
                 />
               </div>
-              <Button
-                onClick={() => setIsModalOpen(true)}
-                className={`${isDenseView ? "h-9 px-3 text-xs" : "h-9.5 px-4 text-sm"} bg-indigo-600 text-white shadow-sm transition-all hover:bg-indigo-700 hover:shadow-md`}
-              >
-                + Add Word
-              </Button>
               <Button
                 onClick={() => fileInputRef.current?.click()}
                 disabled={isUploading}
@@ -979,7 +923,7 @@ export default function Home() {
             </div>
           ) : (
             <div className="rounded-xl border border-dashed border-slate-200 bg-white py-20 text-center text-slate-400 dark:border-[#30363d] dark:bg-[#161b22]">
-              No words found. Time to add some! ✍️
+              No words found. Upload an Excel file to start your vocabulary set.
             </div>
           )}
         </div>
@@ -1007,211 +951,92 @@ export default function Home() {
         )}
       </div>
 
-      {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-sm">
-          <div className="animate-in zoom-in fade-in w-full max-w-md space-y-6 rounded-2xl border border-slate-100 bg-white p-6 shadow-xl duration-200 dark:border-[#30363d] dark:bg-[#161b22]">
-            <div className="flex items-center justify-between">
-              <h2 className="text-2xl font-bold text-slate-900 dark:text-white">Add New Word</h2>
-              <button onClick={() => setIsModalOpen(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
-                ✕
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">English Word</label>
-                <Input
-                  placeholder="e.g. apple"
-                  value={newWord}
-                  onChange={(event) => setNewWord(event.target.value)}
-                  className="h-11 border-slate-200 bg-slate-50 text-lg transition-all focus:bg-white dark:border-[#30363d] dark:bg-[#010409] dark:text-[#c9d1d9] dark:focus:bg-[#0d1117]"
-                  autoFocus
-                />
+      {uploadDialogState !== "closed" && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4 backdrop-blur-sm">
+          <div className="animate-in zoom-in fade-in w-full max-w-lg rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl duration-200 dark:border-[#30363d] dark:bg-[#161b22]">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400 dark:text-slate-500">
+                  Excel Upload
+                </p>
+                <h2 className="mt-1 text-2xl font-black tracking-tight text-slate-900 dark:text-white">
+                  {uploadDialogState === "confirm" && "엑셀로 단어 전체 교체"}
+                  {uploadDialogState === "uploading" && "업로드 진행 중"}
+                  {uploadDialogState === "success" && "업로드 완료"}
+                  {uploadDialogState === "error" && "확인 필요"}
+                </h2>
               </div>
-              <div className="space-y-2">
-                <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">Korean Meaning</label>
-                <Input
-                  placeholder="비워두면 AI가 뜻을 추천해줍니다! ✨"
-                  value={newMeaning}
-                  onChange={(event) => setNewMeaning(event.target.value)}
-                  className="h-11 border-slate-200 bg-slate-50 text-lg transition-all focus:bg-white dark:border-[#30363d] dark:bg-[#010409] dark:text-[#c9d1d9] dark:focus:bg-[#0d1117]"
-                />
-              </div>
-
-              <div className="space-y-3 border-t border-slate-100 pt-2 dark:border-[#30363d]">
-                <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">Validator Model</label>
-                <div className="grid grid-cols-2 gap-2">
-                  <div
-                    onClick={() => setModelType("exaone")}
-                    className={
-                      "cursor-pointer rounded-lg border p-3 text-center text-sm font-medium transition-all " +
-                      (modelType === "exaone"
-                        ? "border-indigo-200 bg-indigo-50 text-indigo-700 dark:border-indigo-500/50 dark:bg-indigo-900/30 dark:text-indigo-300"
-                        : "border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100 dark:border-[#30363d] dark:bg-[#010409] dark:text-slate-400")
-                    }
-                  >
-                    🤖 LG Exaone (Local)
-                  </div>
-                  <div
-                    onClick={() => setModelType("solar-pro")}
-                    className={
-                      "cursor-pointer rounded-lg border p-3 text-center text-sm font-medium transition-all " +
-                      (modelType === "solar-pro"
-                        ? "border-orange-200 bg-orange-50 text-orange-700 dark:border-orange-500/50 dark:bg-orange-900/30 dark:text-orange-300"
-                        : "border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100 dark:border-[#30363d] dark:bg-[#010409] dark:text-slate-400")
-                    }
-                  >
-                    ☀️ Nemotron (API)
-                  </div>
-                </div>
-
-                {modelType === "solar-pro" && (
-                  <p className="animate-in slide-in-from-top-2 fade-in mt-1 text-[10px] text-slate-400 duration-200 dark:text-slate-500">
-                    * Using Server-side API Key for Nemotron.
-                  </p>
-                )}
-              </div>
-            </div>
-
-            {addStatus !== "idle" && (
-              <div
-                className={
-                  "rounded-xl border p-4 text-sm " +
-                  (addStatus === "validating"
-                    ? "border-indigo-100 bg-indigo-50 text-indigo-700"
-                    : addStatus === "success"
-                      ? "border-green-100 bg-green-50 text-green-700"
-                      : addStatus === "error"
-                        ? "border-red-100 bg-red-50 text-red-700"
-                        : "border-amber-100 bg-amber-50 text-amber-800")
-                }
-              >
-                <div className="flex items-start justify-between">
-                  <div>
-                    <div className="mb-1 flex items-center gap-2 font-medium">
-                      {addStatus === "validating" && <span className="animate-spin">⏳</span>}
-                      {addStatus === "success" && <span>✅ Success</span>}
-                      {addStatus === "error" && <span>🚨 Error</span>}
-                      {addStatus === "suggestion" && <span>💡 AI Suggestion</span>}
-                    </div>
-                    <div className="whitespace-pre-wrap pl-6 opacity-90">{statusMessage}</div>
-                  </div>
-                  {addStatus === "suggestion" && (
-                    <button
-                      onClick={() => handleAddWord(false)}
-                      className="w-fit whitespace-nowrap rounded border border-amber-200/50 bg-white/50 px-2 py-1 text-xs text-amber-700 transition hover:bg-white/80"
-                      title="AI에게 다시 물어보기 (Re-verify)"
-                    >
-                      🔄 재검증
-                    </button>
-                  )}
-                </div>
-
-                {addStatus === "suggestion" && suggestion && (
-                  <div className="mt-3 rounded-lg border border-amber-200/50 bg-white/50 p-3 text-xs">
-                    <div className="mb-2 grid grid-cols-[60px_1fr] gap-1">
-                      <span className="self-center font-bold text-blue-600">Input:</span>
-                      <span className="text-sm font-bold text-blue-700 dark:text-blue-400">
-                        {newWord} : {newMeaning}
-                      </span>
-                      <span className="font-bold text-green-600">Fix:</span>
-                      <span className="text-sm font-bold text-green-700 dark:text-green-400">
-                        <span className={suggestion.corrected_word && suggestion.corrected_word !== newWord ? "text-red-600 dark:text-red-400" : ""}>
-                          {suggestion.corrected_word || newWord}
-                        </span>
-                        {" : "}
-                        <span className={suggestion.corrected_meaning && suggestion.corrected_meaning !== newMeaning ? "text-red-600 dark:text-red-400" : ""}>
-                          {suggestion.corrected_meaning || newMeaning}
-                        </span>
-                      </span>
-                    </div>
-                    <div className="mt-2 flex gap-2">
-                      {newMeaning.trim() !== "" && (
-                        <Button
-                          size="sm"
-                          className="flex-1 border-0 bg-indigo-600 text-white hover:bg-indigo-700"
-                          onClick={() => {
-                            const aiCorrectedWord = suggestion.corrected_word || newWord
-                            if (newWord.trim().toLowerCase() !== aiCorrectedWord.trim().toLowerCase()) {
-                              alert(["⚠️ 철자가 틀린 것 같아요!", "", `입력한 단어: ${newWord}`, `올바른 철자: ${aiCorrectedWord}`, "", "철자를 수정해주세요."].join("\n"))
-                              return
-                            }
-                            handleAddWord(true, newWord, newMeaning)
-                          }}
-                        >
-                          Use My Input
-                        </Button>
-                      )}
-
-                      <Button
-                        size="sm"
-                        className="flex-1 border-0 bg-amber-600 text-white hover:bg-amber-700"
-                        onClick={() => {
-                          const finalWord = suggestion.corrected_word || newWord
-                          const finalMeaning = suggestion.corrected_meaning || newMeaning
-                          setNewWord(finalWord)
-                          setNewMeaning(finalMeaning)
-                          handleAddWord(true, finalWord, finalMeaning)
-                        }}
-                      >
-                        Use AI Suggestion
-                      </Button>
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="mt-2 w-full border-slate-200 text-slate-500 hover:text-slate-700 dark:border-slate-700 dark:hover:text-slate-300"
-                      onClick={() => {
-                        setAddStatus("idle")
-                        setStatusMessage("")
-                      }}
-                    >
-                      Cancel & Edit
-                    </Button>
-                  </div>
-                )}
-
-                {addStatus === "confirm_needed" && (
-                  <div className="mt-3">
-                    <Button
-                      size="sm"
-                      className="w-full border-0 bg-green-600 font-bold text-white hover:bg-green-700"
-                      onClick={() => handleAddWord(true)}
-                    >
-                      네, 추가할게요! (Confirm)
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="mt-2 w-full border-slate-200 text-slate-500 hover:text-slate-700 dark:border-slate-700 dark:hover:text-slate-300"
-                      onClick={() => {
-                        setAddStatus("idle")
-                        setStatusMessage("")
-                      }}
-                    >
-                      취소 (Cancel)
-                    </Button>
-                  </div>
-                )}
-              </div>
-            )}
-
-            <div className="flex justify-end gap-3 pt-2">
-              <Button
-                variant="ghost"
-                onClick={() => setIsModalOpen(false)}
-                className="text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-700"
-              >
-                Cancel
-              </Button>
-
-              {addStatus !== "confirm_needed" && addStatus !== "suggestion" && (
-                <Button
-                  onClick={() => handleAddWord(false)}
-                  disabled={addStatus === "validating"}
-                  className="bg-slate-900 hover:bg-slate-800 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-200"
+              {uploadDialogState !== "uploading" && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUploadDialogState("closed")
+                    setUploadDialogMessage("")
+                    setSelectedUploadFile(null)
+                  }}
+                  className="text-slate-400 transition-colors hover:text-slate-700 dark:hover:text-slate-200"
                 >
-                  {addStatus === "validating" ? "Checking..." : "Check & Add"}
+                  ✕
+                </button>
+              )}
+            </div>
+
+            <div
+              className={`mt-5 rounded-2xl border px-4 py-4 text-sm leading-6 ${
+                uploadDialogState === "success"
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/20 dark:text-emerald-300"
+                  : uploadDialogState === "error"
+                    ? "border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-900/50 dark:bg-rose-950/20 dark:text-rose-300"
+                    : "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-200"
+              }`}
+            >
+              {uploadDialogState === "confirm" && (
+                <>
+                  <p className="font-semibold">현재 단어장이 엑셀 내용으로 완전히 교체됩니다.</p>
+                  <p className="mt-2">{uploadDialogMessage}</p>
+                  <p className="mt-2 text-xs opacity-80">기존 단어는 모두 삭제되고, 되돌리려면 다시 엑셀을 업로드해야 합니다.</p>
+                </>
+              )}
+              {uploadDialogState === "uploading" && (
+                <div className="flex items-center gap-3">
+                  <span className="animate-spin text-lg">⏳</span>
+                  <div>
+                    <p className="font-semibold">엑셀을 업로드하고 있습니다.</p>
+                    <p className="text-xs opacity-80">잠시만 기다려주세요.</p>
+                  </div>
+                </div>
+              )}
+              {(uploadDialogState === "success" || uploadDialogState === "error") && <p>{uploadDialogMessage}</p>}
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2">
+              {uploadDialogState === "confirm" && (
+                <>
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      setUploadDialogState("closed")
+                      setUploadDialogMessage("")
+                      setSelectedUploadFile(null)
+                    }}
+                    className="dark:border-[#30363d] dark:bg-[#161b22] dark:text-[#c9d1d9] dark:hover:bg-[#21262d]"
+                  >
+                    Cancel
+                  </Button>
+                  <Button onClick={runExcelUpload} className="bg-orange-600 text-white hover:bg-orange-700">
+                    Replace All Words
+                  </Button>
+                </>
+              )}
+              {(uploadDialogState === "success" || uploadDialogState === "error") && (
+                <Button
+                  onClick={() => {
+                    setUploadDialogState("closed")
+                    setUploadDialogMessage("")
+                  }}
+                  className="bg-slate-900 text-white hover:bg-slate-800 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-200"
+                >
+                  확인
                 </Button>
               )}
             </div>

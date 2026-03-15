@@ -34,7 +34,28 @@ frontend/dist/
 # Excel / Data Backups
 ~$*.xlsx
 영단어_backup.xlsx
+*.xlsx
+*.xls
+*.csv
 *.tmp
+
+# Uploaded / Local Data
+uploads/
+
+# Audio / Video
+*.mp3
+*.wav
+*.m4a
+*.aac
+*.flac
+*.ogg
+*.mp4
+*.mov
+
+# Database / Local Backups
+*.db
+*.sqlite3
+*.bak
 
 # OS Generated
 .DS_Store
@@ -57,6 +78,8 @@ logs/
 # MCP Config
 **/mcp_config.json
 .gemini/
+.agent/
+unused_scripts/
 
 # Images
 *.png
