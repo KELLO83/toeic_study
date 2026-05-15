@@ -77,6 +77,7 @@ class ChatRequest(BaseModel):
     message: str
     history: list = []
 
+#deprecated: frontend no longer exposes Talk with LLM, keep endpoint for now.
 @app.post("/chat")
 async def chat_with_solar(req: ChatRequest):
     if not SOLAR_API_KEY or "YOUR_ACTUAL_API_KEY" in SOLAR_API_KEY:

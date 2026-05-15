@@ -12,11 +12,6 @@ interface Word {
   sheet_name: string
 }
 
-interface ChatMessage {
-  role: "user" | "assistant"
-  content: string
-}
-
 interface GameQuestion {
   instanceId: string
   wordId: number
@@ -88,12 +83,6 @@ export default function Home() {
   const [itemsPerPage, setItemsPerPage] = useState(10)
   const [currentPage, setCurrentPage] = useState(1)
 
-  const [isChatOpen, setIsChatOpen] = useState(false)
-  const [chatMessage, setChatMessage] = useState("")
-  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([])
-  const [isChatLoading, setIsChatLoading] = useState(false)
-  const chatScrollRef = useRef<HTMLDivElement>(null)
-
   const [accent, setAccent] = useState<"US" | "UK" | "AU">("US")
   const [playingId, setPlayingId] = useState<string | number | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -117,13 +106,8 @@ export default function Home() {
 
   const isDenseView = itemsPerPage === 15
   const isComfortView = itemsPerPage === 10
+  const useCompactLayout = isDenseView || viewMode !== "list"
   const listHeightClass = isDenseView ? "h-[calc(100vh-205px)]" : "h-[calc(100vh-230px)]"
-
-  useEffect(() => {
-    if (chatScrollRef.current) {
-      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight
-    }
-  }, [chatHistory])
 
   useEffect(() => {
     if (isStudyMode) {
@@ -380,38 +364,6 @@ export default function Home() {
     }
   }
 
-  const handleSendMessage = async () => {
-    if (!chatMessage.trim()) return
-
-    const newMessage: ChatMessage = { role: "user", content: chatMessage }
-    setChatHistory((prev) => [...prev, newMessage])
-    setChatMessage("")
-    setIsChatLoading(true)
-
-    try {
-      const response = await fetch("http://127.0.0.1:8000/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: chatMessage,
-          history: chatHistory,
-        }),
-      })
-      const data = await response.json()
-      if (data.response) {
-        setChatHistory((prev) => [...prev, { role: "assistant", content: data.response }])
-      }
-    } catch (error) {
-      console.error("Chat Error:", error)
-      setChatHistory((prev) => [
-        ...prev,
-        { role: "assistant", content: "서버 연결에 실패했습니다. Solar Pro API 설정을 확인해주세요." },
-      ])
-    } finally {
-      setIsChatLoading(false)
-    }
-  }
-
   useEffect(() => {
     const handlePageHotkeys = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
@@ -464,171 +416,96 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-slate-50 font-sans transition-colors duration-300 selection:bg-indigo-100 selection:text-indigo-900 dark:bg-[#0d1117] dark:selection:bg-indigo-900 dark:selection:text-indigo-100">
-      <div className={`mx-auto px-4 ${isDenseView ? "max-w-6xl space-y-2 py-2.5" : "max-w-5xl space-y-3 py-3"}`}>
-        <div className={`flex flex-col ${isDenseView ? "gap-1" : "gap-2"}`}>
-          <div className={`flex flex-col ${isDenseView ? "gap-1" : "gap-2"} xl:flex-row xl:items-start xl:justify-between`}>
+      <div className={`mx-auto px-4 ${useCompactLayout ? "max-w-6xl space-y-2 py-2.5" : "max-w-5xl space-y-3 py-3"}`}>
+        <div className={`flex flex-col ${useCompactLayout ? "gap-1" : "gap-2"}`}>
+          <div className={`flex flex-col ${useCompactLayout ? "gap-1" : "gap-2"} xl:flex-row xl:items-start xl:justify-between`}>
             <div>
-              <h1 className={`${isDenseView ? "text-2xl" : "text-[30px]"} font-extrabold tracking-tight text-slate-900 transition-colors dark:text-white`}>
+              <h1 className={`${useCompactLayout ? "text-2xl" : "text-[30px]"} font-extrabold tracking-tight text-slate-900 transition-colors dark:text-white`}>
                 TOEIC Whisper
               </h1>
-              <p className={`mt-0.5 text-slate-500 ${isDenseView ? "text-[11px]" : "text-xs"}`}>
+              <p className={`mt-0.5 text-slate-500 ${useCompactLayout ? "text-[11px]" : "text-xs"}`}>
                 Your Personal Vocabulary Coach
               </p>
             </div>
 
-            <div className={`flex flex-col gap-1 xl:items-end`}>
-              <div className="flex flex-wrap items-center gap-2 xl:justify-end">
-                <div className="flex gap-1 rounded-lg border border-slate-200 bg-white p-1 dark:border-[#30363d] dark:bg-[#161b22]">
-                  <button
-                    onClick={() => setAccent("US")}
-                    className={`rounded px-2 py-1 text-xs font-bold ${accent === "US" ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300" : "text-slate-400 hover:text-slate-600"}`}
-                  >
-                    🇺🇸 US
-                  </button>
-                  <button
-                    onClick={() => setAccent("UK")}
-                    className={`rounded px-2 py-1 text-xs font-bold ${accent === "UK" ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300" : "text-slate-400 hover:text-slate-600"}`}
-                  >
-                    🇬🇧 UK
-                  </button>
-                  <button
-                    onClick={() => setAccent("AU")}
-                    className={`rounded px-2 py-1 text-xs font-bold ${accent === "AU" ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300" : "text-slate-400 hover:text-slate-600"}`}
-                  >
-                    🇦🇺 AU
-                  </button>
-                </div>
-
-                <div
-                  onClick={() => setIsStudyMode(!isStudyMode)}
-                  className={`group flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 transition-all ${
-                    isStudyMode
-                      ? "border-indigo-200 bg-indigo-50 dark:border-indigo-500/50 dark:bg-indigo-900/20"
-                      : "border-slate-200 bg-white hover:border-indigo-200 dark:border-[#30363d] dark:bg-[#161b22]"
-                  }`}
+            <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+              <div className="flex gap-1 rounded-lg border border-slate-200 bg-white p-1 dark:border-[#30363d] dark:bg-[#161b22]">
+                <button
+                  onClick={() => setAccent("US")}
+                  className={`rounded px-2 py-1 text-xs font-bold ${accent === "US" ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300" : "text-slate-400 hover:text-slate-600"}`}
                 >
-                  <div className={`text-sm font-medium ${isStudyMode ? "text-indigo-700 dark:text-indigo-300" : "text-slate-500"}`}>
-                    Study Mode
-                  </div>
-                  <div className={`relative h-6 w-10 rounded-full p-1 transition-colors ${isStudyMode ? "bg-indigo-600" : "bg-slate-300 dark:bg-slate-700"}`}>
-                    <div className={`h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${isStudyMode ? "translate-x-4" : "translate-x-0"}`} />
-                  </div>
-                </div>
-
-                <div
-                  onClick={() => setIsDarkMode(!isDarkMode)}
-                  className={`group flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 transition-all ${
-                    isDarkMode ? "border-slate-700 bg-slate-800" : "border-slate-200 bg-white hover:border-indigo-200"
-                  }`}
+                  🇺🇸 US
+                </button>
+                <button
+                  onClick={() => setAccent("UK")}
+                  className={`rounded px-2 py-1 text-xs font-bold ${accent === "UK" ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300" : "text-slate-400 hover:text-slate-600"}`}
                 >
-                  <div className={`text-sm font-medium ${isDarkMode ? "text-slate-200" : "text-slate-500"}`}>
-                    {isDarkMode ? "Dark" : "Light"}
-                  </div>
-                  <div className={`flex h-6 w-6 items-center justify-center rounded-full transition-colors ${isDarkMode ? "bg-slate-700 text-yellow-300" : "bg-orange-100 text-orange-500"}`}>
-                    {isDarkMode ? "🌙" : "☀️"}
-                  </div>
+                  🇬🇧 UK
+                </button>
+                <button
+                  onClick={() => setAccent("AU")}
+                  className={`rounded px-2 py-1 text-xs font-bold ${accent === "AU" ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300" : "text-slate-400 hover:text-slate-600"}`}
+                >
+                  🇦🇺 AU
+                </button>
+              </div>
+
+              <div
+                onClick={() => setIsStudyMode(!isStudyMode)}
+                className={`group flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 transition-all ${
+                  isStudyMode
+                    ? "border-indigo-200 bg-indigo-50 dark:border-indigo-500/50 dark:bg-indigo-900/20"
+                    : "border-slate-200 bg-white hover:border-indigo-200 dark:border-[#30363d] dark:bg-[#161b22]"
+                }`}
+              >
+                <div className={`text-sm font-medium ${isStudyMode ? "text-indigo-700 dark:text-indigo-300" : "text-slate-500"}`}>
+                  Study Mode
                 </div>
-
-                <div className="inline-flex items-center rounded-lg border border-slate-200 bg-white p-1 shadow-sm dark:border-[#30363d] dark:bg-[#161b22]">
-                  {[10, 15].map((count) => {
-                    const isActive = itemsPerPage === count
-
-                    return (
-                      <button
-                        key={count}
-                        type="button"
-                        onClick={() => {
-                          setItemsPerPage(count)
-                          setCurrentPage(1)
-                        }}
-                        className={`${isDenseView ? "h-8 px-2.5 text-[11px]" : "h-9 px-3 text-xs"} rounded-md font-semibold transition-all ${
-                          isActive
-                            ? "bg-indigo-600 text-white shadow-sm"
-                            : "text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-[#21262d]"
-                        }`}
-                      >
-                        {count} items
-                      </button>
-                    )
-                  })}
+                <div className={`relative h-6 w-10 rounded-full p-1 transition-colors ${isStudyMode ? "bg-indigo-600" : "bg-slate-300 dark:bg-slate-700"}`}>
+                  <div className={`h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${isStudyMode ? "translate-x-4" : "translate-x-0"}`} />
                 </div>
               </div>
 
-              <Button
-                onClick={() => setIsChatOpen(!isChatOpen)}
-                className={`${isDenseView ? "h-8 px-3 text-[11px]" : "h-8.5 px-4 text-xs"} rounded-full font-bold shadow-md transition-all ${
-                  isChatOpen
-                    ? "bg-orange-500 text-white hover:bg-orange-600"
-                    : "bg-gradient-to-r from-indigo-600 to-indigo-500 text-white hover:from-indigo-700 hover:to-indigo-600"
+              <div
+                onClick={() => setIsDarkMode(!isDarkMode)}
+                className={`group flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 transition-all ${
+                  isDarkMode ? "border-slate-700 bg-slate-800" : "border-slate-200 bg-white hover:border-indigo-200"
                 }`}
               >
-                {isChatOpen ? "✕ Close Chat" : "✨ Talk with SOLAR LLM"}
-              </Button>
+                <div className={`text-sm font-medium ${isDarkMode ? "text-slate-200" : "text-slate-500"}`}>
+                  {isDarkMode ? "Dark" : "Light"}
+                </div>
+                <div className={`flex h-6 w-6 items-center justify-center rounded-full transition-colors ${isDarkMode ? "bg-slate-700 text-yellow-300" : "bg-orange-100 text-orange-500"}`}>
+                  {isDarkMode ? "🌙" : "☀️"}
+                </div>
+              </div>
+
+              <div className="inline-flex items-center rounded-lg border border-slate-200 bg-white p-1 shadow-sm dark:border-[#30363d] dark:bg-[#161b22]">
+                {[10, 15].map((count) => {
+                  const isActive = itemsPerPage === count
+
+                  return (
+                    <button
+                      key={count}
+                      type="button"
+                      onClick={() => {
+                        setItemsPerPage(count)
+                        setCurrentPage(1)
+                      }}
+                      className={`${useCompactLayout ? "h-8 px-2.5 text-[11px]" : "h-9 px-3 text-xs"} rounded-md font-semibold transition-all ${
+                        isActive
+                          ? "bg-indigo-600 text-white shadow-sm"
+                          : "text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-[#21262d]"
+                      }`}
+                    >
+                      {count} items
+                    </button>
+                  )
+                })}
+              </div>
             </div>
           </div>
         </div>
-
-        {isChatOpen && (
-          <div className="animate-in slide-in-from-top-4 fade-in overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl duration-300 dark:border-[#30363d] dark:bg-[#161b22]">
-            <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/50 p-4 dark:border-[#30363d] dark:bg-slate-800/30">
-              <div className="flex items-center gap-2">
-                <span className="text-xl">☀️</span>
-                <span className="font-bold text-slate-700 dark:text-slate-200">Solar Pro Teacher</span>
-              </div>
-              <span className="rounded-full bg-indigo-100 px-2 py-1 font-mono text-[10px] text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-400">
-                POWERED BY UPSTAGE
-              </span>
-            </div>
-
-            <div ref={chatScrollRef} className="h-[350px] space-y-4 overflow-y-auto p-4 scroll-smooth">
-              {chatHistory.length === 0 && (
-                <div className="space-y-2 py-10 text-center text-slate-400">
-                  <p>영어 학습이나 궁금한 점을 SOLAR AI에게 물어보세요!</p>
-                  <p className="text-xs italic">"이 단어의 예문 좀 알려줘", "TOEIC Part 5 꿀팁 알려줘" 등</p>
-                </div>
-              )}
-              {chatHistory.map((message, index) => (
-                <div key={index} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
-                  <div
-                    className={`max-w-[80%] whitespace-pre-wrap rounded-2xl px-4 py-2 text-sm shadow-sm ${
-                      message.role === "user"
-                        ? "rounded-tr-none bg-indigo-600 text-white"
-                        : "rounded-tl-none border border-slate-200 bg-slate-100 text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-                    }`}
-                  >
-                    {message.content}
-                  </div>
-                </div>
-              ))}
-              {isChatLoading && (
-                <div className="flex justify-start">
-                  <div className="animate-pulse rounded-2xl bg-slate-100 px-4 py-2 text-sm text-slate-500 dark:bg-slate-800">
-                    AI 선생님이 생각 중입니다...
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div className="border-t border-slate-100 bg-slate-50 p-4 dark:border-[#30363d] dark:bg-slate-800/20">
-              <div className="flex gap-2">
-                <Input
-                  value={chatMessage}
-                  onChange={(event) => setChatMessage(event.target.value)}
-                  onKeyDown={(event) => event.key === "Enter" && handleSendMessage()}
-                  placeholder="메시지를 입력하세요..."
-                  className="border-slate-200 bg-white dark:border-[#30363d] dark:bg-[#0d1117] dark:text-white"
-                />
-                <Button
-                  onClick={handleSendMessage}
-                  disabled={isChatLoading || !chatMessage.trim()}
-                  className="bg-indigo-600 text-white hover:bg-indigo-700"
-                >
-                  Send
-                </Button>
-              </div>
-            </div>
-          </div>
-        )}
 
         {viewMode === "list" && (
           <>
